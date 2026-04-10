@@ -61,7 +61,7 @@ public class Message extends javax.swing.JPanel {
         g2.fillRect(0, 0, getWidth(), getHeight());
         g2.setComposite(AlphaComposite.SrcOver);
         g2.setColor(new Color(245, 245, 245));
-        g2.
+        
         super.paintComponent(grphcs);
     }
 
