@@ -2,3 +2,5 @@
 /build/
 /nbproject/
 /test/
+/dist/
+/config/database.properties

@@ -5,21 +5,23 @@ public class ModelUser {
     private int userId;
     private String fullName;
     private String email;
-    private String password;
-    private String role;
+    private AppDomain.UserRole role;
 
     public ModelUser() {
     }
 
-    public ModelUser(int userId, String email, String password, String role) {
-        this(userId, "", email, password, role);
+    public ModelUser(int userId, String email, AppDomain.UserRole role) {
+        this(userId, "", email, role);
     }
 
-    public ModelUser(int userId, String fullName, String email, String password, String role) {
+    public ModelUser(int userId, String email, String role) {
+        this(userId, "", email, AppDomain.UserRole.valueOf(role.toUpperCase()));
+    }
+
+    public ModelUser(int userId, String fullName, String email, AppDomain.UserRole role) {
         this.userId = userId;
         this.fullName = fullName;
         this.email = email;
-        this.password = password;
         this.role = role;
     }
 
@@ -48,26 +50,26 @@ public class ModelUser {
     }
 
     public String getPassword() {
-        return password;
+        return "";
     }
 
     public void setPassword(String password) {
-        this.password = password;
+        // Session users no longer keep readable passwords in memory.
     }
 
-    public String getRole() {
+    public AppDomain.UserRole getRole() {
         return role;
     }
 
-    public void setRole(String role) {
+    public void setRole(AppDomain.UserRole role) {
         this.role = role;
     }
 
     public boolean isAdmin() {
-        return "admin".equalsIgnoreCase(role);
+        return AppDomain.UserRole.ADMIN == role;
     }
 
     public boolean isTeacher() {
-        return "teacher".equalsIgnoreCase(role);
+        return AppDomain.UserRole.TEACHER == role;
     }
 }

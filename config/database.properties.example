@@ -1,0 +1,28 @@
+# 1. Copy this file to config/database.properties
+# 2. Update the MariaDB/XAMPP credentials below
+# 3. Add your Resend API key and verified sender settings
+# 4. Restart the Swing application
+
+db.enabled=true
+db.driverClass=com.mysql.cj.jdbc.Driver
+db.url=jdbc:mysql://localhost:3306/qrattend_db?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Singapore
+db.username=root
+db.password=your_mariadb_password_here
+
+# Resend email delivery
+mail.enabled=false
+mail.provider=resend
+mail.apiKey=your_resend_api_key_here
+mail.fromEmail=no-reply@yourdomain.com
+mail.fromName=QR Attend
+mail.replyTo=
+mail.apiBaseUrl=https://api.resend.com
+mail.timeoutSeconds=20
+
+# Gemini AI
+ai.enabled=false
+ai.provider=gemini
+ai.apiKey=your_gemini_api_key_here
+ai.model=gemini-2.5-flash
+ai.timeoutSeconds=20
+ai.maxPromptChars=12000
