@@ -1,8 +1,8 @@
 # Database Flow
 
-This document explains how the code talks to MariaDB and outside services.
+This file explains how the project talks to MariaDB and outside services.
 
-## Main Database Classes
+## 1. Database entry files
 
 - [`src/ppb/qrattend/db/DatabaseConfig.java`](../src/ppb/qrattend/db/DatabaseConfig.java)
 - [`src/ppb/qrattend/db/DatabaseManager.java`](../src/ppb/qrattend/db/DatabaseManager.java)
@@ -10,17 +10,22 @@ This document explains how the code talks to MariaDB and outside services.
 - [`src/ppb/qrattend/db/PasswordUtil.java`](../src/ppb/qrattend/db/PasswordUtil.java)
 - [`src/ppb/qrattend/db/SecurityUtil.java`](../src/ppb/qrattend/db/SecurityUtil.java)
 
-## Database Login
+## 2. Login flow
 
-Login goes through:
+```mermaid
+flowchart LR
+    A["Main.java"] --> B["DatabaseAuthenticationService"]
+    B --> C["DatabaseManager"]
+    C --> D["users table"]
+```
 
-1. `Main.java`
-2. `DatabaseAuthenticationService.authenticate(...)`
-3. `users` table
+In plain words:
 
-The app now expects DB-backed login during normal use.
+- login starts in `Main.java`
+- the authentication service checks the email and password
+- MariaDB returns the matching admin or teacher account
 
-## Service -> Table Map
+## 3. Service to table map
 
 ### TeacherService
 
@@ -62,7 +67,7 @@ Main tables:
 
 ### ReportService
 
-Reads from:
+Reads mostly from:
 
 - `users`
 - `teacher_schedules`
@@ -71,35 +76,42 @@ Reads from:
 - `attendance_records`
 - `email_dispatch_logs`
 
-## External Service Flow
+## 4. Outside service flow
 
 ```mermaid
 flowchart LR
-    A["TeacherService / StudentService"] --> B["ResendEmailClient"]
-    B --> C["Resend API"]
+    A["TeacherService"] --> B["EmailDispatchService"]
+    C["StudentService"] --> B
+    B --> D["ResendEmailClient"]
+    D --> E["Resend API"]
 
-    D["StoreTeacherAssistantSupport"] --> E["AiInsightService"]
-    E --> F["GeminiAiClient"]
-    F --> G["Gemini API"]
+    F["StoreTeacherAssistantSupport"] --> G["AiInsightService"]
+    G --> H["GeminiAiClient"]
+    H --> I["Gemini API"]
 
-    H["AttendanceScreen"] --> I["QrScannerDialog"]
-    I --> J["QrCodeService"]
+    J["AttendanceScreen"] --> K["QrScannerDialog"]
+    K --> L["QrCodeService"]
 ```
 
-## QR Flow
+## 5. QR flow
 
-The QR system is safer now:
+Important rule:
 
-- the app generates opaque random QR values
-- the database stores hashed token values
-- raw QR values should not be shown again after sending
+- the app should not keep raw QR secrets in normal logs or previews
+
+Current QR direction:
+
+- create a random QR token
+- store only the hash in the database
+- email the QR code to the student
+- scan the QR and match by the hashed value
 
 Main QR files:
 
 - [`src/ppb/qrattend/qr/QrCodeService.java`](../src/ppb/qrattend/qr/QrCodeService.java)
 - [`src/ppb/qrattend/qr/QrScannerDialog.java`](../src/ppb/qrattend/qr/QrScannerDialog.java)
 
-## Email Flow
+## 6. Email flow
 
 Main files:
 
@@ -107,10 +119,16 @@ Main files:
 - [`src/ppb/qrattend/email/ResendEmailClient.java`](../src/ppb/qrattend/email/ResendEmailClient.java)
 - [`src/ppb/qrattend/service/EmailDispatchService.java`](../src/ppb/qrattend/service/EmailDispatchService.java)
 
-Teacher password emails and student QR emails both go through Resend.
+The project uses Resend for:
 
-## SQL Files
+- teacher password emails
+- student QR code emails
 
-- Full setup: [`database/qrattend_full_schema.sql`](../database/qrattend_full_schema.sql)
-- Student-section migration: [`database/qrattend_admin_student_sections_migration.sql`](../database/qrattend_admin_student_sections_migration.sql)
-- Security cleanup migration: [`database/qrattend_security_cleanup_migration.sql`](../database/qrattend_security_cleanup_migration.sql)
+## 7. SQL files
+
+- full schema:
+  - [`database/qrattend_full_schema.sql`](../database/qrattend_full_schema.sql)
+- admin/student section migration:
+  - [`database/qrattend_admin_student_sections_migration.sql`](../database/qrattend_admin_student_sections_migration.sql)
+- security cleanup migration:
+  - [`database/qrattend_security_cleanup_migration.sql`](../database/qrattend_security_cleanup_migration.sql)

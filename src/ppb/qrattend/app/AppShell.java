@@ -81,17 +81,17 @@ public class AppShell extends JPanel {
     private void buildNavigation() {
         navigation.clear();
         if (user.isAdmin()) {
-            navigation.put("dashboard", "Dashboard");
-            navigation.put("teachers", "Teachers");
+            navigation.put("dashboard", "Home");
+            navigation.put("teachers", "Add Teacher");
             navigation.put("students", "Students");
-            navigation.put("schedules", "Schedules");
+            navigation.put("schedules", "Set Schedule");
             navigation.put("requests", "Requests");
             navigation.put("reports", "Reports");
         } else {
-            navigation.put("dashboard", "Dashboard");
-            navigation.put("attendance", "Attendance");
-            navigation.put("students", "My Roster");
-            navigation.put("schedule", "My Schedule");
+            navigation.put("dashboard", "Home");
+            navigation.put("attendance", "Start Attendance");
+            navigation.put("students", "Class List");
+            navigation.put("schedule", "Schedule Help");
             navigation.put("reports", "Reports");
         }
     }
@@ -126,7 +126,7 @@ public class AppShell extends JPanel {
         sidebar.add(brand);
         sidebar.add(Box.createVerticalStrut(4));
 
-        JLabel subtitle = new JLabel("School attendance");
+        JLabel subtitle = new JLabel("Easy school attendance");
         subtitle.setFont(AppTheme.bodyFont(11));
         subtitle.setForeground(new Color(168, 205, 181));
         subtitle.setAlignmentX(Component.LEFT_ALIGNMENT);
@@ -145,7 +145,7 @@ public class AppShell extends JPanel {
         sidebar.add(nameTag);
         sidebar.add(Box.createVerticalStrut(22));
 
-        JLabel navSection = new JLabel("MENU");
+        JLabel navSection = new JLabel("QUICK MENU");
         navSection.setFont(AppTheme.bodyFont(10));
         navSection.setForeground(new Color(130, 170, 150));
         navSection.setAlignmentX(Component.LEFT_ALIGNMENT);
@@ -248,44 +248,44 @@ public class AppShell extends JPanel {
         String subtitle;
         switch (selectedView) {
             case "dashboard" -> {
-                title = user.isAdmin() ? "Admin Dashboard" : "Teacher Dashboard";
+                title = "Home";
                 subtitle = user.isAdmin()
-                        ? "See classes happening now, requests that need approval, and attendance updates."
-                        : "See your classes today and the latest attendance updates.";
+                        ? "Pick the next task you want to do."
+                        : "Pick what you want to do next.";
             }
             case "teachers" -> {
                 title = "Teachers";
-                subtitle = "Add teachers, send passwords again, and check if the email was sent.";
+                subtitle = "Add a teacher or send the password again.";
             }
             case "students" -> {
-                title = user.isAdmin() ? "Students" : "My Class List";
+                title = user.isAdmin() ? "Students" : "Class List";
                 subtitle = user.isAdmin()
-                        ? "Add students by section, choose their teacher, and send their QR code."
-                        : "Check your class list and ask the admin to remove a student if needed.";
+                        ? "Add students, pick the section, and send the QR code."
+                        : "Check your students and ask the admin for help if needed.";
             }
             case "schedules" -> {
                 title = "Class Schedule";
-                subtitle = "Set class days and times, and avoid overlapping classes.";
+                subtitle = "Set class days and times.";
             }
             case "requests" -> {
                 title = "Requests";
-                subtitle = "Review schedule changes and student removal requests.";
+                subtitle = "Check requests that still need a decision.";
             }
             case "attendance" -> {
                 title = "Take Attendance";
-                subtitle = "Scan QR codes, open a temporary class if needed, or mark attendance without QR.";
+                subtitle = "Start class, scan QR, and use help only if needed.";
             }
             case "schedule" -> {
                 title = "My Schedule";
-                subtitle = "Check your approved class schedule and ask for changes if something is wrong.";
+                subtitle = "Check your schedule and ask for a change if needed.";
             }
             case "reports" -> {
                 title = "Reports";
-                subtitle = "Filter attendance records and review the class summary.";
+                subtitle = "Check the summary and ask AI if something needs attention.";
             }
             default -> {
-                title = "Dashboard";
-                subtitle = "Review school attendance updates.";
+                title = "Home";
+                subtitle = "Pick the next task you want to do.";
             }
         }
         titleLabel.setText(title);
@@ -333,27 +333,33 @@ public class AppShell extends JPanel {
         ));
         panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
 
-        panel.add(detailBlock("Your Account", List.of(
+        panel.add(detailBlock("Your account", List.of(
                 user.getFullName(),
                 user.getEmail(),
-                "Account type: " + user.getRole().getLabel()
+                user.getRole().getLabel()
         )));
         panel.add(Box.createVerticalStrut(16));
 
-        if (user.isAdmin()) {
-            panel.add(detailBlock("Quick Look", List.of(
-                    "Teachers: " + store.getTeacherCount(),
-                    "Need approval: " + store.getPendingRequestCount(),
-                    "Email issues: " + store.getFailedEmailCount(),
-                    "Classes happening now: " + store.getActiveClassCount()
+        if ("dashboard".equals(selectedView)) {
+            panel.add(user.isAdmin() ? buildAdminHomeDetails() : buildTeacherHomeDetails());
+        } else if ("attendance".equals(selectedView)) {
+            panel.add(buildAttendanceHelpDetails());
+        } else if ("requests".equals(selectedView)) {
+            panel.add(buildPendingRequestDetails());
+        } else if ("reports".equals(selectedView)) {
+            panel.add(buildReportsHelpDetails());
+        } else if (user.isTeacher()) {
+            AttendanceSession session = store.getSessionForTeacher(user.getUserId());
+            panel.add(detailBlock("What to do next", List.of(
+                    "Current class: " + session.getSubjectName(),
+                    "Class status: " + session.getState().getLabel(),
+                    "Open the page on the left, then finish one task at a time."
             )));
         } else {
-            AttendanceSession session = store.getSessionForTeacher(user.getUserId());
-            panel.add(detailBlock("Class Right Now", List.of(
-                    "Status: " + session.getState().getLabel(),
-                    "Subject: " + session.getSubjectName(),
-                    "Room: " + session.getRoom(),
-                    "Note: " + (session.getNote() == null || session.getNote().isBlank() ? "None" : session.getNote())
+            panel.add(detailBlock("What to do next", List.of(
+                    "Open one page from the left menu.",
+                    "Finish the main task at the top of that page.",
+                    "Check the banner at the top after you save."
             )));
         }
         panel.add(Box.createVerticalStrut(16));
@@ -362,16 +368,16 @@ public class AppShell extends JPanel {
         for (EmailDispatch dispatch : store.getRecentEmailDispatches(4)) {
             recentEmailLines.add(dispatch.getRecipient() + " | " + dispatch.getStatus().getLabel());
         }
-        panel.add(detailBlock("Recent Emails", recentEmailLines.isEmpty() ? List.of("No emails yet.") : recentEmailLines));
+        panel.add(detailBlock("Recent updates", recentEmailLines.isEmpty() ? List.of("No email updates yet.") : recentEmailLines));
         panel.add(Box.createVerticalStrut(16));
 
-        if ("attendance".equals(selectedView) || "reports".equals(selectedView)) {
+        if ("attendance".equals(selectedView) || "reports".equals(selectedView) || "dashboard".equals(selectedView)) {
             List<String> attendanceLines = new ArrayList<>();
             for (AttendanceRecord record : store.getRecentAttendanceRecords(4, user.isTeacher() ? user.getUserId() : null)) {
                 attendanceLines.add(record.getStudentName() + " | " + record.getSubjectName() + " | " + record.getSource().getLabel());
             }
-            panel.add(detailBlock("Recent Attendance", attendanceLines.isEmpty() ? List.of("No attendance yet.") : attendanceLines));
-        } else if ("requests".equals(selectedView) || "schedule".equals(selectedView)) {
+            panel.add(detailBlock("Recent attendance", attendanceLines.isEmpty() ? List.of("No attendance yet.") : attendanceLines));
+        } else if ("schedule".equals(selectedView) || "students".equals(selectedView)) {
             List<String> requestLines = new ArrayList<>();
             List<ScheduleChangeRequest> requests = user.isAdmin()
                     ? store.getScheduleRequests()
@@ -380,13 +386,7 @@ public class AppShell extends JPanel {
                 ScheduleChangeRequest request = requests.get(index);
                 requestLines.add("#" + request.getId() + " | " + request.getStatus().getLabel() + " | " + request.getRequester());
             }
-            panel.add(detailBlock("Requests", requestLines.isEmpty() ? List.of("No requests yet.") : requestLines));
-        } else {
-            panel.add(detailBlock("Helpful Notes", List.of(
-                    "Use the menu on the left to open the page you need.",
-                    "The newest updates appear here after you save changes.",
-                    "Check the banner at the top for success or warning messages."
-            )));
+            panel.add(detailBlock("Recent requests", requestLines.isEmpty() ? List.of("No request updates yet.") : requestLines));
         }
 
         detailHost.add(panel, BorderLayout.CENTER);
@@ -577,6 +577,14 @@ public class AppShell extends JPanel {
         refreshSelectedView();
     }
 
+    void openView(String viewKey) {
+        if (viewKey == null || !navigation.containsKey(viewKey)) {
+            return;
+        }
+        selectedView = viewKey;
+        refreshSelectedView();
+    }
+
     private List<String> buildTimeOptions() {
         List<String> values = new ArrayList<>();
         LocalTime time = LocalTime.of(7, 0);
@@ -592,18 +600,10 @@ public class AppShell extends JPanel {
         block.setOpaque(false);
         block.setLayout(new BoxLayout(block, BoxLayout.Y_AXIS));
 
-        JPanel headRow = new JPanel();
-        headRow.setOpaque(false);
-        headRow.setLayout(new BoxLayout(headRow, BoxLayout.X_AXIS));
-        JLabel dot = new JLabel("> ");
-        dot.setFont(AppTheme.bodyFont(10));
-        dot.setForeground(AppTheme.BRAND);
-        headRow.add(dot);
         JLabel heading = new JLabel(title.toUpperCase(Locale.ENGLISH));
         heading.setFont(AppTheme.bodyFont(10));
         heading.setForeground(AppTheme.TEXT_MUTED);
-        headRow.add(heading);
-        block.add(headRow);
+        block.add(heading);
         block.add(Box.createVerticalStrut(8));
 
         for (String line : lines) {
@@ -614,5 +614,47 @@ public class AppShell extends JPanel {
             block.add(Box.createVerticalStrut(4));
         }
         return block;
+    }
+
+    private JPanel buildAdminHomeDetails() {
+        return detailBlock("What to do next", List.of(
+                "1. Add a teacher",
+                "2. Add students to a class",
+                "3. Set the class schedule",
+                "4. Check requests that need approval"
+        ));
+    }
+
+    private JPanel buildTeacherHomeDetails() {
+        return detailBlock("What to do next", List.of(
+                "1. Start attendance",
+                "2. Scan student QR codes",
+                "3. Use help only if QR does not work",
+                "4. Check your report if something looks wrong"
+        ));
+    }
+
+    private JPanel buildAttendanceHelpDetails() {
+        return detailBlock("Need help?", List.of(
+                "If the class is already open, go straight to scan.",
+                "If there is no class open, start a temporary class first.",
+                "Use 'Mark Without QR' only when scanning is not possible."
+        ));
+    }
+
+    private JPanel buildPendingRequestDetails() {
+        return detailBlock("What matters first", List.of(
+                "Check the pending requests first.",
+                "Approve only if the request is correct.",
+                "Rejected requests stay in the history for reference."
+        ));
+    }
+
+    private JPanel buildReportsHelpDetails() {
+        return detailBlock("How to use this page", List.of(
+                "Pick one subject if you want a smaller report.",
+                "Refresh the report after changing the filter.",
+                "Ask AI if you want the page explained in plain language."
+        ));
     }
 }

@@ -22,88 +22,128 @@ final class AttendanceScreen {
     }
 
     static JPanel build(AppShell shell) {
-        AppDataStore store = shell.getStore();
-        ModelUser user = shell.getCurrentUser();
         JPanel page = AppTheme.createPage();
-        AttendanceSession session = store.getSessionForTeacher(user.getUserId());
+        AttendanceSession session = shell.getStore().getSessionForTeacher(shell.getCurrentUser().getUserId());
 
-        page.add(shell.createMetricsRow(
-                AppTheme.createStatCard("Class Status", session.getState().getLabel(), AppTheme.BRAND),
+        page.add(buildStatusRow(shell, session));
+        page.add(Box.createVerticalStrut(16));
+        page.add(buildStartClassSection(shell, session));
+        page.add(Box.createVerticalStrut(16));
+        page.add(buildScanSection(shell));
+        page.add(Box.createVerticalStrut(16));
+        page.add(buildHelpSection(shell));
+        page.add(Box.createVerticalStrut(16));
+        page.add(buildRecentAttendanceSection(shell));
+        return page;
+    }
+
+    private static JPanel buildStatusRow(AppShell shell, AttendanceSession session) {
+        return shell.createMetricsRow(
+                AppTheme.createStatCard("Class status", session.getState().getLabel(), AppTheme.BRAND),
                 AppTheme.createStatCard("Subject", session.getSubjectName(), AppTheme.INFO),
-                AppTheme.createStatCard("Students", String.valueOf(store.getStudentCountForTeacher(user.getUserId())), AppTheme.SUCCESS),
-                AppTheme.createStatCard("Taken Today", String.valueOf(store.getRecentAttendanceRecords(50, user.getUserId()).size()), AppTheme.WARNING)
-        ));
-        page.add(Box.createVerticalStrut(16));
+                AppTheme.createStatCard("Taken today",
+                        String.valueOf(shell.getStore().getRecentAttendanceRecords(50, shell.getCurrentUser().getUserId()).size()),
+                        AppTheme.SUCCESS)
+        );
+    }
 
-        page.add(shell.createTeacherAssistantSection(
-                "attendance",
-                "Ask AI",
-                "Ask why a scan did not work, who may need follow-up, or what attendance pattern needs attention.",
-                "Are there any unusual attendance or scan patterns I should watch?"
-        ));
-        page.add(Box.createVerticalStrut(16));
+    private static JPanel buildStartClassSection(AppShell shell, AttendanceSession session) {
+        JTextField subjectField = shell.newTextField();
+        subjectField.setText(session.getSubjectName());
+        JTextArea reasonArea = shell.newTextArea();
+        reasonArea.setText("My class needs to start now.");
 
+        JButton startButton = new JButton("Start Class");
+        AppTheme.stylePrimaryButton(startButton);
+        startButton.addActionListener(event -> {
+            shell.showResult(shell.getStore().openOverrideSession(
+                    shell.getCurrentUser().getUserId(),
+                    subjectField.getText(),
+                    reasonArea.getText()
+            ));
+            shell.refreshView();
+        });
+
+        JButton closeButton = new JButton("Close Temporary Class");
+        AppTheme.styleDangerButton(closeButton);
+        closeButton.addActionListener(event -> {
+            shell.showResult(shell.getStore().closeOverrideSession(shell.getCurrentUser().getUserId()));
+            shell.refreshView();
+        });
+
+        JPanel info = AppFlowPanels.createSimpleList("Step 1: Start class", java.util.List.of(
+                "Current status: " + session.getState().getLabel(),
+                "Current subject: " + session.getSubjectName(),
+                session.isOverrideSession()
+                        ? "You are using a temporary class right now."
+                        : "If your regular class is already open, move to Step 2."
+        ));
+
+        JPanel form = new JPanel(new GridLayout(1, 3, 12, 0));
+        form.setOpaque(false);
+        form.add(shell.labeledField("Subject", subjectField));
+        form.add(shell.labeledField("Why do you need this?", new javax.swing.JScrollPane(reasonArea)));
+
+        JPanel actions = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 0));
+        actions.setOpaque(false);
+        actions.add(startButton);
+        actions.add(closeButton);
+        form.add(shell.labeledField("Action", actions));
+
+        return shell.createSection("Step 1: Start class",
+                "If your regular class is not open, start a temporary class first.",
+                AppTheme.stack(info, form));
+    }
+
+    private static JPanel buildScanSection(AppShell shell) {
         JTextField qrField = shell.newTextField();
-        JTextField overrideSubjectField = shell.newTextField();
-        overrideSubjectField.setText(session.getSubjectName());
-        JTextArea overrideReasonArea = shell.newTextArea();
-        overrideReasonArea.setText("The camera or scanner is not available right now.");
 
-        JButton scan = new JButton("Scan QR");
-        AppTheme.stylePrimaryButton(scan);
-        scan.addActionListener(event -> {
-            shell.showResult(store.markAttendanceFromQr(user.getUserId(), qrField.getText()));
+        JButton cameraButton = new JButton("Use Camera");
+        AppTheme.styleSecondaryButton(cameraButton);
+        cameraButton.addActionListener(event -> shell.openQrScannerFor(qrField));
+
+        JButton scanButton = new JButton("Scan Student QR");
+        AppTheme.stylePrimaryButton(scanButton);
+        scanButton.addActionListener(event -> {
+            shell.showResult(shell.getStore().markAttendanceFromQr(
+                    shell.getCurrentUser().getUserId(),
+                    qrField.getText()
+            ));
             shell.refreshView();
         });
 
-        JButton cameraScan = new JButton("Use Camera");
-        AppTheme.styleSecondaryButton(cameraScan);
-        cameraScan.addActionListener(event -> shell.openQrScannerFor(qrField));
+        JPanel actions = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 0));
+        actions.setOpaque(false);
+        actions.add(scanButton);
+        actions.add(cameraButton);
 
-        JButton openOverride = new JButton("Open Temporary Class");
-        AppTheme.styleSecondaryButton(openOverride);
-        openOverride.addActionListener(event -> {
-            shell.showResult(store.openOverrideSession(user.getUserId(), overrideSubjectField.getText(), overrideReasonArea.getText()));
-            shell.refreshView();
-        });
+        JPanel body = new JPanel(new BorderLayout(0, 12));
+        body.setOpaque(false);
+        body.add(shell.labeledField("Student QR or student ID", qrField), BorderLayout.NORTH);
+        body.add(actions, BorderLayout.SOUTH);
 
-        JButton closeOverride = new JButton("Close Temporary Class");
-        AppTheme.styleDangerButton(closeOverride);
-        closeOverride.addActionListener(event -> {
-            shell.showResult(store.closeOverrideSession(user.getUserId()));
-            shell.refreshView();
-        });
+        return shell.createSection("Step 2: Scan student QR",
+                "Scan one student at a time. If the camera does not work, use the help section below.",
+                body);
+    }
 
-        JPanel scanGrid = new JPanel(new GridLayout(2, 2, 12, 12));
-        scanGrid.setOpaque(false);
-        scanGrid.add(shell.labeledField("QR Code or Student ID", qrField));
-        scanGrid.add(shell.labeledField("Subject", overrideSubjectField));
-        scanGrid.add(shell.labeledField("Reason", new javax.swing.JScrollPane(overrideReasonArea)));
-        JPanel actionBox = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 0));
-        actionBox.setOpaque(false);
-        actionBox.add(scan);
-        actionBox.add(cameraScan);
-        actionBox.add(openOverride);
-        actionBox.add(closeOverride);
-        scanGrid.add(shell.labeledField("Actions", actionBox));
-        page.add(shell.createSection("Take Attendance", "Use QR during class, or open a temporary class when needed.", scanGrid));
-        page.add(Box.createVerticalStrut(16));
-
-        DefaultTableModel studentModel = shell.createTableModel("Student ID", "Student", "Email", "QR Status");
-        for (StudentProfile student : store.getStudentsForTeacher(user.getUserId())) {
+    private static JPanel buildHelpSection(AppShell shell) {
+        DefaultTableModel studentModel = shell.createTableModel("Student ID", "Student", "Email");
+        for (StudentProfile student : shell.getStore().getStudentsForTeacher(shell.getCurrentUser().getUserId())) {
             studentModel.addRow(new Object[]{
                 student.getStudentId(),
                 student.getFullName(),
-                student.getEmail(),
-                student.getQrStatus().getLabel()
+                student.getEmail()
             });
         }
         JTable studentTable = new JTable(studentModel);
-        JTextField manualNoteField = shell.newTextField();
-        manualNoteField.setText("Attendance was marked without QR.");
-        JButton markManual = new JButton("Mark Without QR");
-        AppTheme.styleSecondaryButton(markManual);
-        markManual.addActionListener(event -> {
+
+        JTextField noteField = shell.newTextField();
+        noteField.setText("QR could not be used.");
+
+        JButton markManualButton = new JButton("Mark Without QR");
+        AppTheme.styleSecondaryButton(markManualButton);
+        markManualButton.addActionListener(event -> {
             int row = studentTable.getSelectedRow();
             if (row < 0) {
                 shell.showMessage("Choose a student first.", AppTheme.WARNING);
@@ -111,34 +151,45 @@ final class AttendanceScreen {
                 return;
             }
 
-            shell.showResult(store.markManualAttendance(user.getUserId(), (String) studentModel.getValueAt(row, 0), manualNoteField.getText()));
+            shell.showResult(shell.getStore().markManualAttendance(
+                    shell.getCurrentUser().getUserId(),
+                    (String) studentModel.getValueAt(row, 0),
+                    noteField.getText()
+            ));
             shell.refreshView();
         });
 
-        JPanel manualBody = new JPanel(new BorderLayout(0, 12));
-        manualBody.setOpaque(false);
-        manualBody.add(shell.wrapTable(studentTable), BorderLayout.CENTER);
-        JPanel manualActions = new JPanel(new GridLayout(1, 2, 12, 0));
-        manualActions.setOpaque(false);
-        manualActions.add(shell.labeledField("Note", manualNoteField));
-        manualActions.add(shell.labeledField("Attendance Without QR", markManual));
-        manualBody.add(manualActions, BorderLayout.SOUTH);
-        page.add(shell.createSection("Attendance Without QR", "Choose a student from the class list when a QR code cannot be used.", manualBody));
-        page.add(Box.createVerticalStrut(16));
+        JPanel body = new JPanel(new BorderLayout(0, 12));
+        body.setOpaque(false);
+        body.add(AppFlowPanels.createSimpleList("Step 3: Need help?", java.util.List.of(
+                "Use this only when QR scanning is not possible.",
+                "Choose the student first, then save the attendance.",
+                "Add a short note so you remember why QR was not used."
+        )), BorderLayout.NORTH);
+        body.add(shell.wrapTable(studentTable), BorderLayout.CENTER);
 
-        DefaultTableModel attendanceModel = shell.createTableModel("Student", "Subject", "Time", "Source", "Status", "Note");
-        for (AttendanceRecord record : store.getRecentAttendanceRecords(10, user.getUserId())) {
+        JPanel bottom = new JPanel(new GridLayout(1, 2, 12, 0));
+        bottom.setOpaque(false);
+        bottom.add(shell.labeledField("Why was QR not used?", noteField));
+        bottom.add(shell.labeledField("Action", markManualButton));
+        body.add(bottom, BorderLayout.SOUTH);
+
+        return shell.createSection("Need help?", "Use this only if scanning does not work.", body);
+    }
+
+    private static JPanel buildRecentAttendanceSection(AppShell shell) {
+        DefaultTableModel attendanceModel = shell.createTableModel("Student", "Subject", "Time", "Source", "Status");
+        for (AttendanceRecord record : shell.getStore().getRecentAttendanceRecords(10, shell.getCurrentUser().getUserId())) {
             attendanceModel.addRow(new Object[]{
                 record.getStudentName(),
                 record.getSubjectName(),
                 record.getTimestamp().format(AppDomain.DATE_TIME_FORMAT),
                 record.getSource().getLabel(),
-                record.getStatus().getLabel(),
-                record.getNote()
+                record.getStatus().getLabel()
             });
         }
+
         JTable attendanceTable = new JTable(attendanceModel);
-        page.add(shell.createSection("Recent Attendance", "Latest attendance saved from QR or without QR.", shell.wrapTable(attendanceTable)));
-        return page;
+        return shell.createSection("Recent attendance", "These are the latest records saved for your class.", shell.wrapTable(attendanceTable));
     }
 }

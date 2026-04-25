@@ -2,9 +2,7 @@ package ppb.qrattend.app;
 
 import java.awt.BorderLayout;
 import java.awt.FlowLayout;
-import java.awt.GridLayout;
 import java.time.DayOfWeek;
-import java.util.ArrayList;
 import java.util.List;
 import javax.swing.Box;
 import javax.swing.JButton;
@@ -23,37 +21,40 @@ final class AdminSchedulesScreen {
     }
 
     static JPanel build(AppShell shell) {
-        AppDataStore store = shell.getStore();
-        ModelUser user = shell.getCurrentUser();
         JPanel page = AppTheme.createPage();
+        page.add(buildAddScheduleSection(shell));
+        page.add(Box.createVerticalStrut(16));
+        page.add(buildSavedScheduleSection(shell));
+        return page;
+    }
 
-        List<TeacherProfile> teachers = store.getTeachers();
-        List<String> teacherLabels = new ArrayList<>();
-        for (TeacherProfile teacher : teachers) {
-            teacherLabels.add(teacher.getFullName() + " (" + teacher.getEmail() + ")");
-        }
-
-        JComboBox<String> teacherCombo = new JComboBox<>(teacherLabels.toArray(String[]::new));
+    private static JPanel buildAddScheduleSection(AppShell shell) {
+        ModelUser user = shell.getCurrentUser();
+        List<TeacherProfile> teachers = shell.getStore().getTeachers();
+        JComboBox<String> teacherCombo = new JComboBox<>(teachers.stream()
+                .map(TeacherProfile::getFullName)
+                .toArray(String[]::new));
         AppTheme.styleCombo(teacherCombo);
+
         JTextField subjectField = shell.newTextField();
         JTextField roomField = shell.newTextField();
         JComboBox<DayOfWeek> dayCombo = shell.newDayCombo();
         JComboBox<String> startCombo = shell.newTimeCombo();
         JComboBox<String> endCombo = shell.newTimeCombo();
 
-        JButton save = new JButton("Save Class");
-        AppTheme.stylePrimaryButton(save);
-        save.addActionListener(event -> {
+        JButton saveButton = new JButton("Save Class");
+        AppTheme.stylePrimaryButton(saveButton);
+        saveButton.addActionListener(event -> {
             if (teachers.isEmpty()) {
                 shell.showMessage("Add a teacher first.", AppTheme.WARNING);
                 shell.refreshView();
                 return;
             }
 
-            TeacherProfile selectedTeacher = teachers.get(teacherCombo.getSelectedIndex());
-            shell.showResult(store.addScheduleSlot(
+            TeacherProfile teacher = teachers.get(teacherCombo.getSelectedIndex());
+            shell.showResult(shell.getStore().addScheduleSlot(
                     user.getUserId(),
-                    selectedTeacher.getId(),
+                    teacher.getId(),
                     subjectField.getText(),
                     (DayOfWeek) dayCombo.getSelectedItem(),
                     shell.parseTimeValue((String) startCombo.getSelectedItem()),
@@ -63,29 +64,33 @@ final class AdminSchedulesScreen {
             shell.refreshView();
         });
 
-        JPanel formGrid = new JPanel(new GridLayout(2, 3, 12, 12));
-        formGrid.setOpaque(false);
-        formGrid.add(shell.labeledField("Teacher", teacherCombo));
-        formGrid.add(shell.labeledField("Subject", subjectField));
-        formGrid.add(shell.labeledField("Room", roomField));
-        formGrid.add(shell.labeledField("Day", dayCombo));
-        formGrid.add(shell.labeledField("Start Time", startCombo));
-        formGrid.add(shell.labeledField("End Time", endCombo));
+        JPanel body = new JPanel(new BorderLayout(0, 12));
+        body.setOpaque(false);
+        body.add(AppFlowPanels.createSimpleList("Start here", java.util.List.of(
+                "Pick the teacher.",
+                "Add the subject, room, day, and time.",
+                "Save the class only after checking the time carefully."
+        )), BorderLayout.NORTH);
 
-        JPanel scheduleBody = new JPanel(new BorderLayout(0, 12));
-        scheduleBody.setOpaque(false);
-        scheduleBody.add(formGrid, BorderLayout.CENTER);
-        JPanel actions = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
-        actions.setOpaque(false);
-        actions.add(save);
-        scheduleBody.add(actions, BorderLayout.SOUTH);
-        page.add(shell.createSection("Add Class", "Choose the teacher, subject, day, and time for each class.", scheduleBody));
-        page.add(Box.createVerticalStrut(16));
+        JPanel form = new JPanel(new FlowLayout(FlowLayout.LEFT, 12, 0));
+        form.setOpaque(false);
+        form.add(shell.labeledField("Teacher", teacherCombo));
+        form.add(shell.labeledField("Subject", subjectField));
+        form.add(shell.labeledField("Room", roomField));
+        form.add(shell.labeledField("Day", dayCombo));
+        form.add(shell.labeledField("Start", startCombo));
+        form.add(shell.labeledField("End", endCombo));
+        form.add(shell.labeledField("Action", saveButton));
+        body.add(form, BorderLayout.SOUTH);
 
-        DefaultTableModel scheduleModel = shell.createTableModel("ID", "Teacher", "Subject", "Day", "Time", "Room", "Status");
-        for (ScheduleSlot slot : store.getSchedules()) {
-            TeacherProfile teacher = store.findTeacher(slot.getTeacherId());
-            scheduleModel.addRow(new Object[]{
+        return shell.createSection("Set class schedule", "Add one class at a time.", body);
+    }
+
+    private static JPanel buildSavedScheduleSection(AppShell shell) {
+        DefaultTableModel model = shell.createTableModel("ID", "Teacher", "Subject", "Day", "Time", "Room", "Status");
+        for (ScheduleSlot slot : shell.getStore().getSchedules()) {
+            TeacherProfile teacher = shell.getStore().findTeacher(slot.getTeacherId());
+            model.addRow(new Object[]{
                 slot.getId(),
                 teacher == null ? "-" : teacher.getFullName(),
                 slot.getSubjectName(),
@@ -95,8 +100,8 @@ final class AdminSchedulesScreen {
                 shell.friendlyStatus(slot.getStatus())
             });
         }
-        JTable scheduleTable = new JTable(scheduleModel);
-        page.add(shell.createSection("Saved Classes", "All class schedules that are already approved.", shell.wrapTable(scheduleTable)));
-        return page;
+
+        JTable table = new JTable(model);
+        return shell.createSection("Saved classes", "These are the classes already saved.", shell.wrapTable(table));
     }
 }

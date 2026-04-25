@@ -2,6 +2,8 @@ package ppb.qrattend.app;
 
 import java.awt.BorderLayout;
 import java.awt.FlowLayout;
+import java.util.ArrayList;
+import java.util.List;
 import javax.swing.Box;
 import javax.swing.JButton;
 import javax.swing.JPanel;
@@ -17,13 +19,29 @@ final class RequestsScreen {
     }
 
     static JPanel build(AppShell shell) {
-        AppDataStore store = shell.getStore();
-        ModelUser user = shell.getCurrentUser();
         JPanel page = AppTheme.createPage();
+        page.add(buildScheduleRequestSection(shell, true));
+        page.add(Box.createVerticalStrut(16));
+        page.add(buildStudentRequestSection(shell, true));
+        page.add(Box.createVerticalStrut(16));
+        page.add(buildScheduleRequestSection(shell, false));
+        page.add(Box.createVerticalStrut(16));
+        page.add(buildStudentRequestSection(shell, false));
+        return page;
+    }
 
-        DefaultTableModel requestModel = shell.createTableModel("ID", "Teacher", "Old Schedule", "Requested Schedule", "Status", "Reason");
-        for (ScheduleChangeRequest request : store.getScheduleRequests()) {
-            requestModel.addRow(new Object[]{
+    private static JPanel buildScheduleRequestSection(AppShell shell, boolean pendingOnly) {
+        List<ScheduleChangeRequest> filtered = new ArrayList<>();
+        for (ScheduleChangeRequest request : shell.getStore().getScheduleRequests()) {
+            boolean isPending = request.getStatus() == AppDomain.ScheduleRequestStatus.PENDING;
+            if (pendingOnly == isPending) {
+                filtered.add(request);
+            }
+        }
+
+        DefaultTableModel model = shell.createTableModel("ID", "Teacher", "Old Schedule", "Requested Schedule", "Status", "Reason");
+        for (ScheduleChangeRequest request : filtered) {
+            model.addRow(new Object[]{
                 request.getId(),
                 request.getRequester(),
                 request.getOldValue(),
@@ -32,28 +50,46 @@ final class RequestsScreen {
                 request.getReason()
             });
         }
-        JTable requestTable = new JTable(requestModel);
-        JButton approve = new JButton("Approve");
-        JButton reject = new JButton("Reject");
-        AppTheme.stylePrimaryButton(approve);
-        AppTheme.styleDangerButton(reject);
-        approve.addActionListener(event -> reviewSchedule(shell, store, user, requestTable, requestModel, true));
-        reject.addActionListener(event -> reviewSchedule(shell, store, user, requestTable, requestModel, false));
 
+        JTable table = new JTable(model);
         JPanel body = new JPanel(new BorderLayout(0, 12));
         body.setOpaque(false);
-        body.add(shell.wrapTable(requestTable), BorderLayout.CENTER);
-        JPanel actionRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 0));
-        actionRow.setOpaque(false);
-        actionRow.add(approve);
-        actionRow.add(reject);
-        body.add(actionRow, BorderLayout.SOUTH);
-        page.add(shell.createSection("Schedule Requests", "Review teacher schedule changes before they affect attendance.", body));
-        page.add(Box.createVerticalStrut(16));
+        body.add(shell.wrapTable(table), BorderLayout.CENTER);
 
-        DefaultTableModel removalModel = shell.createTableModel("ID", "Teacher", "Student", "Section", "Reason", "Status");
-        for (AppDomain.StudentRemovalRequest request : store.getStudentRemovalRequests()) {
-            removalModel.addRow(new Object[]{
+        if (pendingOnly) {
+            JButton approveButton = new JButton("Approve");
+            JButton rejectButton = new JButton("Reject");
+            AppTheme.stylePrimaryButton(approveButton);
+            AppTheme.styleDangerButton(rejectButton);
+            approveButton.addActionListener(event -> reviewSchedule(shell, table, model, true));
+            rejectButton.addActionListener(event -> reviewSchedule(shell, table, model, false));
+
+            JPanel actions = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 0));
+            actions.setOpaque(false);
+            actions.add(approveButton);
+            actions.add(rejectButton);
+            body.add(actions, BorderLayout.SOUTH);
+        }
+
+        return shell.createSection(
+                pendingOnly ? "Schedule requests waiting now" : "Reviewed schedule requests",
+                pendingOnly ? "Finish these first." : "These were already reviewed.",
+                body
+        );
+    }
+
+    private static JPanel buildStudentRequestSection(AppShell shell, boolean pendingOnly) {
+        List<AppDomain.StudentRemovalRequest> filtered = new ArrayList<>();
+        for (AppDomain.StudentRemovalRequest request : shell.getStore().getStudentRemovalRequests()) {
+            boolean isPending = request.getStatus() == AppDomain.ScheduleRequestStatus.PENDING;
+            if (pendingOnly == isPending) {
+                filtered.add(request);
+            }
+        }
+
+        DefaultTableModel model = shell.createTableModel("ID", "Teacher", "Student", "Section", "Reason", "Status");
+        for (AppDomain.StudentRemovalRequest request : filtered) {
+            model.addRow(new Object[]{
                 request.getId(),
                 request.getTeacherName(),
                 request.getStudentName(),
@@ -62,49 +98,65 @@ final class RequestsScreen {
                 request.getStatus().getLabel()
             });
         }
-        JTable removalTable = new JTable(removalModel);
-        JButton approveRemoval = new JButton("Approve");
-        JButton rejectRemoval = new JButton("Reject");
-        AppTheme.stylePrimaryButton(approveRemoval);
-        AppTheme.styleDangerButton(rejectRemoval);
-        approveRemoval.addActionListener(event -> reviewStudentRemoval(shell, store, user, removalTable, removalModel, true));
-        rejectRemoval.addActionListener(event -> reviewStudentRemoval(shell, store, user, removalTable, removalModel, false));
 
-        JPanel removalBody = new JPanel(new BorderLayout(0, 12));
-        removalBody.setOpaque(false);
-        removalBody.add(shell.wrapTable(removalTable), BorderLayout.CENTER);
-        JPanel removalActions = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 0));
-        removalActions.setOpaque(false);
-        removalActions.add(approveRemoval);
-        removalActions.add(rejectRemoval);
-        removalBody.add(removalActions, BorderLayout.SOUTH);
-        page.add(shell.createSection("Student Removal Requests", "Approve or reject teacher requests to remove students from their class list.", removalBody));
-        return page;
+        JTable table = new JTable(model);
+        JPanel body = new JPanel(new BorderLayout(0, 12));
+        body.setOpaque(false);
+        body.add(shell.wrapTable(table), BorderLayout.CENTER);
+
+        if (pendingOnly) {
+            JButton approveButton = new JButton("Approve");
+            JButton rejectButton = new JButton("Reject");
+            AppTheme.stylePrimaryButton(approveButton);
+            AppTheme.styleDangerButton(rejectButton);
+            approveButton.addActionListener(event -> reviewStudentRemoval(shell, table, model, true));
+            rejectButton.addActionListener(event -> reviewStudentRemoval(shell, table, model, false));
+
+            JPanel actions = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 0));
+            actions.setOpaque(false);
+            actions.add(approveButton);
+            actions.add(rejectButton);
+            body.add(actions, BorderLayout.SOUTH);
+        }
+
+        return shell.createSection(
+                pendingOnly ? "Class list requests waiting now" : "Reviewed class list requests",
+                pendingOnly ? "These still need your answer." : "These were already reviewed.",
+                body
+        );
     }
 
-    private static void reviewSchedule(AppShell shell, AppDataStore store, ModelUser user,
-            JTable requestTable, DefaultTableModel requestModel, boolean approve) {
-        int row = requestTable.getSelectedRow();
+    private static void reviewSchedule(AppShell shell, JTable table, DefaultTableModel model, boolean approve) {
+        int row = table.getSelectedRow();
         if (row < 0) {
             shell.showMessage("Choose a request first.", AppTheme.WARNING);
             shell.refreshView();
             return;
         }
 
-        shell.showResult(store.reviewScheduleRequest(user.getUserId(), (Integer) requestModel.getValueAt(row, 0), approve, user.getFullName()));
+        shell.showResult(shell.getStore().reviewScheduleRequest(
+                shell.getCurrentUser().getUserId(),
+                (Integer) model.getValueAt(row, 0),
+                approve,
+                shell.getCurrentUser().getFullName()
+        ));
         shell.refreshView();
     }
 
-    private static void reviewStudentRemoval(AppShell shell, AppDataStore store, ModelUser user,
-            JTable removalTable, DefaultTableModel removalModel, boolean approve) {
-        int row = removalTable.getSelectedRow();
+    private static void reviewStudentRemoval(AppShell shell, JTable table, DefaultTableModel model, boolean approve) {
+        int row = table.getSelectedRow();
         if (row < 0) {
             shell.showMessage("Choose a student request first.", AppTheme.WARNING);
             shell.refreshView();
             return;
         }
 
-        shell.showResult(store.reviewStudentRemovalRequest(user.getUserId(), (Integer) removalModel.getValueAt(row, 0), approve, user.getFullName()));
+        shell.showResult(shell.getStore().reviewStudentRemovalRequest(
+                shell.getCurrentUser().getUserId(),
+                (Integer) model.getValueAt(row, 0),
+                approve,
+                shell.getCurrentUser().getFullName()
+        ));
         shell.refreshView();
     }
 }

@@ -1,17 +1,17 @@
 # System Overview
 
-This document explains the main app structure in simple terms.
+This file explains the whole app in simple terms.
 
-## Main Idea
+## 1. Main idea
 
-The project is split into 4 main layers:
+The project is split into four layers:
 
-1. `UI`
-2. `Store`
-3. `Services`
-4. `Database / external APIs`
+1. UI
+2. store
+3. services
+4. database or outside APIs
 
-## Architecture
+## 2. Architecture
 
 ```mermaid
 flowchart LR
@@ -22,81 +22,95 @@ flowchart LR
     C --> F["ScheduleService"]
     C --> G["AttendanceService"]
     C --> H["ReportService"]
-    C --> I["EmailDispatchService"]
-    C --> J["StoreTeacherAssistantSupport"]
-    J --> K["AiInsightService"]
-    D --> L["MariaDB"]
-    E --> L
-    F --> L
-    G --> L
-    H --> L
-    I --> L
-    I --> M["Resend API"]
-    K --> N["Gemini API"]
-    G --> O["QR Scanner / Camera"]
+    C --> I["StoreTeacherAssistantSupport"]
+    D --> J["MariaDB"]
+    E --> J
+    F --> J
+    G --> J
+    H --> J
+    I --> K["AiInsightService"]
+    K --> L["Gemini"]
+    D --> M["Resend"]
+    E --> M
+    G --> N["QR scanner / camera"]
 ```
 
-## Runtime Flow
+## 3. Runtime flow
 
-- `Main.java` starts the app
-- `PanelCover` and `PanelLogin` show the sign-in UI
-- `DatabaseAuthenticationService` checks the login against MariaDB
-- `AppShell` opens the correct admin or teacher workspace
-- Each screen asks `AppDataStore` for data or actions
-- `AppDataStore` forwards those calls to the right service class
+In plain words:
 
-## Why `AppDataStore` Exists
+1. `Main.java` starts the app
+2. the sign in screen opens
+3. `DatabaseAuthenticationService` checks the email and password
+4. `AppShell` opens the admin or teacher workspace
+5. the current page asks `AppDataStore` for data
+6. `AppDataStore` calls the correct service class
+7. service classes talk to MariaDB or outside APIs
 
-The Swing UI should not talk directly to SQL or external APIs.
+## 4. Why AppDataStore exists
 
-So `AppDataStore` acts like one simple middle layer:
+The Swing screens should not talk directly to SQL or to APIs.
 
-- the UI asks for data
-- the store chooses the correct service
-- the store returns easy UI results
+So `AppDataStore` acts like one middle layer:
 
-This makes the UI code easier to read.
+- screen asks the store for data
+- store chooses the right service
+- store returns easy UI-ready results
 
-## Why The Screen Classes Were Split
+This keeps the screen code simpler.
 
-Before refactoring, `AppShell` contained:
+## 5. Why the UI was split into small screen files
 
-- navigation
-- header
-- banner
-- detail panel
-- every screen builder
+Before the refactor, too much UI logic lived in the shell.
 
-Now the screen builders are separated into their own files:
+Now the shell mainly does:
 
-- admin dashboard
-- teachers
+- menu
+- page title
+- banner messages
+- right-side help panel
+- switching pages
+
+Each screen now has its own file, for example:
+
+- admin home
+- teacher home
+- attendance
 - students
 - schedules
 - requests
-- attendance
-- teacher schedule
 - reports
 
 This makes it easier for a beginner to find the page they want to edit.
 
-## Security Direction
+## 6. Current UX direction
 
-The project now avoids showing or storing sensitive data in normal app flow:
+The app is meant to feel simple:
 
-- readable passwords are not kept in session models
-- QR tokens are stored as hashes in the database
-- email previews avoid secret values
-- UI messages avoid raw SQL or config details
+- home is the main starting point
+- each page has one main task first
+- help and extra details stay secondary
+- wording uses plain school language
 
-## Main Packages
+The app is not trying to feel like a technical dashboard.
 
-- `main` -> app entry
-- `component.login` -> sign-in UI
-- `app` -> shell and page builders
-- `app.store` -> store helpers for user messages and AI chat
-- `service` -> business logic
-- `db` -> database config, connection, hashing, security helpers
-- `email` -> Resend integration
-- `qr` -> QR generation and QR scanning
-- `model` -> shared app data objects
+## 7. Important packages
+
+- `main`
+  - starts the app
+- `component.login`
+  - sign in UI
+- `app`
+  - shell and screen files
+- `app.store`
+  - small store helpers for messages and AI chat
+- `service`
+  - real business logic
+- `db`
+  - DB config, password hashing, security helpers
+- `email`
+  - Resend
+- `qr`
+  - QR code generation and scanning
+- `model`
+  - shared app data objects

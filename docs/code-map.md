@@ -1,167 +1,211 @@
 # Code Map
 
-This file is a beginner-friendly map of the active codebase.
+This file is the easiest map of the active codebase.
 
-## 1. App Entry
+Use it when you want to know:
+
+- which file starts the app
+- which file builds a screen
+- which file talks to the database
+- which file sends email
+- which file handles AI
+- which file handles QR
+
+## 1. Start here
 
 ### `src/ppb/qrattend/main`
 
 - [`Main.java`](../src/ppb/qrattend/main/Main.java)
-  - Starts the Swing app
-  - Shows login
-  - Opens the workspace after a successful sign-in
+  - app starting point
+  - login handoff
+  - opens the workspace after sign in
 
-## 2. Login UI
+## 2. Login files
 
 ### `src/ppb/qrattend/component/login`
 
 - [`PanelCover.java`](../src/ppb/qrattend/component/login/PanelCover.java)
-  - Left side of the login screen
-  - Lets the user switch between admin and teacher sign-in
+  - left side of sign in
+  - role switch between admin and teacher
 
 - [`PanelLogin.java`](../src/ppb/qrattend/component/login/PanelLogin.java)
-  - Right side of the login screen
-  - Collects email and password
+  - email and password fields
+  - sign in button
 
-## 3. Main App UI
+## 3. Main app shell
 
 ### `src/ppb/qrattend/app`
 
 - [`AppShell.java`](../src/ppb/qrattend/app/AppShell.java)
-  - Main shell layout
-  - Navigation
-  - Header
-  - Banner
-  - Right-side detail panel
-  - Switches between pages
-
-- [`AdminDashboardScreen.java`](../src/ppb/qrattend/app/AdminDashboardScreen.java)
-  - Admin dashboard page
-
-- [`TeacherDashboardScreen.java`](../src/ppb/qrattend/app/TeacherDashboardScreen.java)
-  - Teacher dashboard page
-
-- [`TeachersScreen.java`](../src/ppb/qrattend/app/TeachersScreen.java)
-  - Teacher management page
-
-- [`AdminStudentsScreen.java`](../src/ppb/qrattend/app/AdminStudentsScreen.java)
-  - Admin student management page
-
-- [`AdminSchedulesScreen.java`](../src/ppb/qrattend/app/AdminSchedulesScreen.java)
-  - Admin schedule management page
-
-- [`RequestsScreen.java`](../src/ppb/qrattend/app/RequestsScreen.java)
-  - Admin approval page
-
-- [`AttendanceScreen.java`](../src/ppb/qrattend/app/AttendanceScreen.java)
-  - Teacher attendance page
-
-- [`TeacherRosterScreen.java`](../src/ppb/qrattend/app/TeacherRosterScreen.java)
-  - Teacher class list page
-
-- [`TeacherScheduleScreen.java`](../src/ppb/qrattend/app/TeacherScheduleScreen.java)
-  - Teacher schedule request page
-
-- [`ReportsScreen.java`](../src/ppb/qrattend/app/ReportsScreen.java)
-  - Reports page for admin and teacher
+  - left menu
+  - page title
+  - banner messages
+  - right-side help panel
+  - screen switching
 
 - [`AppTheme.java`](../src/ppb/qrattend/app/AppTheme.java)
-  - Shared UI colors, fonts, cards, borders, and table styling
+  - colors
+  - fonts
+  - button styles
+  - field styles
+  - table styles
+
+- [`AppFlowPanels.java`](../src/ppb/qrattend/app/AppFlowPanels.java)
+  - simple action tiles
+  - simple helper panels
 
 - [`AppDataStore.java`](../src/ppb/qrattend/app/AppDataStore.java)
-  - UI-facing data facade
-  - Calls service classes
-  - Returns simple results for the UI
+  - one data facade for the UI
+  - screens call this instead of calling services directly
 
-## 4. Store Helpers
+## 4. Admin screen files
+
+- [`AdminDashboardScreen.java`](../src/ppb/qrattend/app/AdminDashboardScreen.java)
+  - admin home
+  - task buttons for setup flow
+
+- [`TeachersScreen.java`](../src/ppb/qrattend/app/TeachersScreen.java)
+  - add teacher
+  - send password again
+  - reset password
+
+- [`AdminStudentsScreen.java`](../src/ppb/qrattend/app/AdminStudentsScreen.java)
+  - add student
+  - assign teacher and section
+  - send QR again
+
+- [`AdminSchedulesScreen.java`](../src/ppb/qrattend/app/AdminSchedulesScreen.java)
+  - set class schedules
+
+- [`RequestsScreen.java`](../src/ppb/qrattend/app/RequestsScreen.java)
+  - approve or reject schedule changes
+  - approve or reject class list changes
+
+- [`ReportsScreen.java`](../src/ppb/qrattend/app/ReportsScreen.java)
+  - report filter
+  - summary
+  - attendance records
+
+## 5. Teacher screen files
+
+- [`TeacherDashboardScreen.java`](../src/ppb/qrattend/app/TeacherDashboardScreen.java)
+  - teacher home
+  - main task buttons
+
+- [`AttendanceScreen.java`](../src/ppb/qrattend/app/AttendanceScreen.java)
+  - start class
+  - scan student QR
+  - mark attendance without QR
+
+- [`TeacherRosterScreen.java`](../src/ppb/qrattend/app/TeacherRosterScreen.java)
+  - class list
+  - ask admin to remove a student
+
+- [`TeacherScheduleScreen.java`](../src/ppb/qrattend/app/TeacherScheduleScreen.java)
+  - view schedule
+  - ask for schedule change
+
+- [`ReportsScreen.java`](../src/ppb/qrattend/app/ReportsScreen.java)
+  - teacher reports
+  - ask AI
+
+## 6. Store helpers
 
 ### `src/ppb/qrattend/app/store`
 
 - [`StoreMessages.java`](../src/ppb/qrattend/app/store/StoreMessages.java)
-  - Cleans service messages into simple user-facing text
+  - cleans messages before the UI shows them
 
 - [`StoreTeacherAssistantSupport.java`](../src/ppb/qrattend/app/store/StoreTeacherAssistantSupport.java)
-  - Builds the teacher `Ask AI` chat context
-  - Stores local conversation history
+  - builds teacher AI context
+  - stores local page conversation history
 
-## 5. Shared Models
+## 7. Shared models
 
 ### `src/ppb/qrattend/model`
 
 - [`AppDomain.java`](../src/ppb/qrattend/model/AppDomain.java)
-  - Shared enums and data objects used by the UI and services
+  - shared app data objects
+  - enums
+  - labels and date format helpers
 
 - [`ModelUser.java`](../src/ppb/qrattend/model/ModelUser.java)
-  - Logged-in user identity used in the workspace
+  - current logged-in user identity
 
-## 6. Database Layer
+## 8. Database files
 
 ### `src/ppb/qrattend/db`
 
 - [`DatabaseConfig.java`](../src/ppb/qrattend/db/DatabaseConfig.java)
-  - Reads database settings
+  - reads DB settings
 
 - [`DatabaseManager.java`](../src/ppb/qrattend/db/DatabaseManager.java)
-  - Opens MariaDB connections
+  - opens MariaDB connections
 
 - [`DatabaseAuthenticationService.java`](../src/ppb/qrattend/db/DatabaseAuthenticationService.java)
-  - Handles sign-in
+  - sign in logic
 
 - [`PasswordUtil.java`](../src/ppb/qrattend/db/PasswordUtil.java)
-  - Hashes passwords
+  - password hashing
 
 - [`SecurityUtil.java`](../src/ppb/qrattend/db/SecurityUtil.java)
-  - Security helpers such as hashing and safe previews
+  - hashing and safe preview helpers
 
-## 7. Service Layer
+## 9. Business services
 
 ### `src/ppb/qrattend/service`
 
 - [`TeacherService.java`](../src/ppb/qrattend/service/TeacherService.java)
-  - Teacher account actions
+  - teacher account actions
 
 - [`StudentService.java`](../src/ppb/qrattend/service/StudentService.java)
-  - Student creation, QR sending, and roster requests
+  - student creation
+  - QR sending
+  - class list removal requests
 
 - [`ScheduleService.java`](../src/ppb/qrattend/service/ScheduleService.java)
-  - Schedule creation and schedule change requests
+  - schedule setup
+  - schedule change requests
 
 - [`AttendanceService.java`](../src/ppb/qrattend/service/AttendanceService.java)
-  - Attendance sessions and attendance records
+  - attendance sessions
+  - QR attendance
+  - manual attendance
 
 - [`ReportService.java`](../src/ppb/qrattend/service/ReportService.java)
-  - Dashboard counts and report summaries
+  - report data
+  - dashboard counts
 
 - [`EmailDispatchService.java`](../src/ppb/qrattend/service/EmailDispatchService.java)
-  - Email log reads and updates
+  - email log queue and update logic
 
 - [`AuditLogService.java`](../src/ppb/qrattend/service/AuditLogService.java)
-  - Audit log access
-
-- [`IoTDeviceService.java`](../src/ppb/qrattend/service/IoTDeviceService.java)
-  - Backend device logic
-
-- [`AutomationService.java`](../src/ppb/qrattend/service/AutomationService.java)
-  - Backend automation logic
+  - audit log writes and reads
 
 - [`AiInsightService.java`](../src/ppb/qrattend/service/AiInsightService.java)
-  - AI request and insight storage logic
+  - AI request and saved insight logic
+
+- [`AutomationService.java`](../src/ppb/qrattend/service/AutomationService.java)
+  - backend automation logic
+
+- [`IoTDeviceService.java`](../src/ppb/qrattend/service/IoTDeviceService.java)
+  - backend device logic
 
 - [`ServiceResult.java`](../src/ppb/qrattend/service/ServiceResult.java)
-  - Common result wrapper for services
+  - common service result wrapper
 
-## 8. AI Layer
+## 10. AI files
 
 ### `src/ppb/qrattend/ai`
 
 - [`AiConfig.java`](../src/ppb/qrattend/ai/AiConfig.java)
-  - Reads AI settings
+  - AI config values
 
 - [`AiInsightRequest.java`](../src/ppb/qrattend/ai/AiInsightRequest.java)
-  - AI request object
+  - AI request data
 
 - [`AiInsightResponse.java`](../src/ppb/qrattend/ai/AiInsightResponse.java)
-  - AI response object
+  - AI response data
 
 - [`AiClient.java`](../src/ppb/qrattend/ai/AiClient.java)
   - AI client interface
@@ -169,29 +213,23 @@ This file is a beginner-friendly map of the active codebase.
 - [`GeminiAiClient.java`](../src/ppb/qrattend/ai/GeminiAiClient.java)
   - Gemini implementation
 
-## 9. Email Layer
+## 11. Email files
 
 ### `src/ppb/qrattend/email`
 
 - [`ResendConfig.java`](../src/ppb/qrattend/email/ResendConfig.java)
-  - Reads Resend settings
+  - Resend settings
 
 - [`ResendEmailClient.java`](../src/ppb/qrattend/email/ResendEmailClient.java)
-  - Sends teacher and student emails
+  - sends teacher and student emails
 
-## 10. QR Layer
+## 12. QR files
 
 ### `src/ppb/qrattend/qr`
 
 - [`QrCodeService.java`](../src/ppb/qrattend/qr/QrCodeService.java)
-  - Creates QR images
-  - Decodes QR values
+  - create QR images
+  - decode QR values
 
 - [`QrScannerDialog.java`](../src/ppb/qrattend/qr/QrScannerDialog.java)
-  - Camera/image scanner window
-
-## 11. Custom Swing Components
-
-### `src/ppb/qrattend/swing`
-
-- Custom text fields, buttons, and UI widgets used by the login screen and app UI
+  - camera or image scan window

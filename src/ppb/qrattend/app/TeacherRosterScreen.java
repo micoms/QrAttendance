@@ -10,7 +10,6 @@ import javax.swing.JTextArea;
 import javax.swing.table.DefaultTableModel;
 import ppb.qrattend.model.AppDomain;
 import ppb.qrattend.model.AppDomain.StudentProfile;
-import ppb.qrattend.model.ModelUser;
 
 final class TeacherRosterScreen {
 
@@ -18,15 +17,16 @@ final class TeacherRosterScreen {
     }
 
     static JPanel build(AppShell shell) {
-        AppDataStore store = shell.getStore();
-        ModelUser user = shell.getCurrentUser();
         JPanel page = AppTheme.createPage();
+        page.add(buildClassListSection(shell));
+        page.add(Box.createVerticalStrut(16));
+        page.add(buildRemovalRequestSection(shell));
+        return page;
+    }
 
-        JTextArea reasonArea = shell.newTextArea();
-        reasonArea.setText("Student transferred or should be removed from my section list.");
-
+    private static JPanel buildClassListSection(AppShell shell) {
         DefaultTableModel studentModel = shell.createTableModel("Student ID", "Full Name", "Section", "Email", "QR Email");
-        for (StudentProfile student : store.getStudentsForTeacher(user.getUserId())) {
+        for (StudentProfile student : shell.getStore().getStudentsForTeacher(shell.getCurrentUser().getUserId())) {
             studentModel.addRow(new Object[]{
                 student.getStudentId(),
                 student.getFullName(),
@@ -35,35 +35,64 @@ final class TeacherRosterScreen {
                 student.getQrStatus().getLabel()
             });
         }
-        JTable studentTable = new JTable(studentModel);
 
-        JButton requestRemoval = new JButton("Request Removal");
-        AppTheme.styleDangerButton(requestRemoval);
-        requestRemoval.addActionListener(event -> {
-            int row = studentTable.getSelectedRow();
+        JTable table = new JTable(studentModel);
+        return shell.createSection("My class list", "These are the students currently in your class list.", shell.wrapTable(table));
+    }
+
+    private static JPanel buildRemovalRequestSection(AppShell shell) {
+        JTextArea reasonArea = shell.newTextArea();
+        reasonArea.setText("This student should be removed from my class list.");
+
+        DefaultTableModel studentModel = shell.createTableModel("Student ID", "Student", "Section");
+        for (StudentProfile student : shell.getStore().getStudentsForTeacher(shell.getCurrentUser().getUserId())) {
+            studentModel.addRow(new Object[]{
+                student.getStudentId(),
+                student.getFullName(),
+                student.getSectionName()
+            });
+        }
+        JTable table = new JTable(studentModel);
+
+        JButton requestButton = new JButton("Ask Admin");
+        AppTheme.styleDangerButton(requestButton);
+        requestButton.addActionListener(event -> {
+            int row = table.getSelectedRow();
             if (row < 0) {
                 shell.showMessage("Choose a student first.", AppTheme.WARNING);
                 shell.refreshView();
                 return;
             }
 
-            shell.showResult(store.requestStudentRemoval(user.getUserId(), (String) studentModel.getValueAt(row, 0), reasonArea.getText()));
+            shell.showResult(shell.getStore().requestStudentRemoval(
+                    shell.getCurrentUser().getUserId(),
+                    (String) studentModel.getValueAt(row, 0),
+                    reasonArea.getText()
+            ));
             shell.refreshView();
         });
 
-        JPanel rosterBody = new JPanel(new BorderLayout(0, 12));
-        rosterBody.setOpaque(false);
-        rosterBody.add(shell.wrapTable(studentTable), BorderLayout.CENTER);
-        JPanel removalRow = new JPanel(new GridLayout(1, 2, 12, 0));
-        removalRow.setOpaque(false);
-        removalRow.add(shell.labeledField("Reason", new javax.swing.JScrollPane(reasonArea)));
-        removalRow.add(shell.labeledField("Need Approval", requestRemoval));
-        rosterBody.add(removalRow, BorderLayout.SOUTH);
-        page.add(shell.createSection("My Class List", "Check your students and ask the admin to remove a student if needed.", rosterBody));
-        page.add(Box.createVerticalStrut(16));
+        JPanel requestBody = new JPanel(new BorderLayout(0, 12));
+        requestBody.setOpaque(false);
+        requestBody.add(AppFlowPanels.createSimpleList("Need a student removed?", java.util.List.of(
+                "Choose the student from the list.",
+                "Write a short reason.",
+                "The admin must approve it first."
+        )), BorderLayout.NORTH);
+        requestBody.add(shell.wrapTable(table), BorderLayout.CENTER);
+
+        JPanel bottom = new JPanel(new GridLayout(1, 2, 12, 0));
+        bottom.setOpaque(false);
+        bottom.add(shell.labeledField("Reason", new javax.swing.JScrollPane(reasonArea)));
+        bottom.add(shell.labeledField("Action", requestButton));
+        requestBody.add(bottom, BorderLayout.SOUTH);
+
+        JPanel section = AppTheme.createPage();
+        section.add(shell.createSection("Ask admin to remove a student", "Use this when a student should no longer be in your class list.", requestBody));
+        section.add(Box.createVerticalStrut(16));
 
         DefaultTableModel requestModel = shell.createTableModel("ID", "Student", "Section", "Reason", "Status", "Reviewed By");
-        for (AppDomain.StudentRemovalRequest request : store.getStudentRemovalRequestsForTeacher(user.getUserId())) {
+        for (AppDomain.StudentRemovalRequest request : shell.getStore().getStudentRemovalRequestsForTeacher(shell.getCurrentUser().getUserId())) {
             requestModel.addRow(new Object[]{
                 request.getId(),
                 request.getStudentName(),
@@ -73,8 +102,9 @@ final class TeacherRosterScreen {
                 request.getReviewedBy() == null || request.getReviewedBy().isBlank() ? "-" : request.getReviewedBy()
             });
         }
-        JTable requestTable = new JTable(requestModel);
-        page.add(shell.createSection("Student Removal Requests", "Check whether your requests are still waiting, approved, or rejected.", shell.wrapTable(requestTable)));
-        return page;
+
+        section.add(shell.createSection("Your requests", "This shows if your request is still waiting, approved, or rejected.",
+                shell.wrapTable(new JTable(requestModel))));
+        return section;
     }
 }

@@ -7,7 +7,6 @@ import java.time.DayOfWeek;
 import javax.swing.Box;
 import javax.swing.JButton;
 import javax.swing.JComboBox;
-import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JTable;
 import javax.swing.JTextArea;
@@ -15,7 +14,6 @@ import javax.swing.JTextField;
 import javax.swing.table.DefaultTableModel;
 import ppb.qrattend.model.AppDomain.ScheduleChangeRequest;
 import ppb.qrattend.model.AppDomain.ScheduleSlot;
-import ppb.qrattend.model.ModelUser;
 
 final class TeacherScheduleScreen {
 
@@ -23,13 +21,21 @@ final class TeacherScheduleScreen {
     }
 
     static JPanel build(AppShell shell) {
-        AppDataStore store = shell.getStore();
-        ModelUser user = shell.getCurrentUser();
-        JPanel page = AppTheme.createPage();
+        ScheduleTableData tableData = createScheduleTable(shell);
 
-        DefaultTableModel scheduleModel = shell.createTableModel("ID", "Subject", "Day", "Time", "Room", "Status");
-        for (ScheduleSlot slot : store.getSchedulesForTeacher(user.getUserId())) {
-            scheduleModel.addRow(new Object[]{
+        JPanel page = AppTheme.createPage();
+        page.add(shell.createSection("My schedule", "These are your current classes.", shell.wrapTable(tableData.table)));
+        page.add(Box.createVerticalStrut(16));
+        page.add(buildChangeRequestSection(shell, tableData));
+        page.add(Box.createVerticalStrut(16));
+        page.add(buildRequestHistorySection(shell));
+        return page;
+    }
+
+    private static ScheduleTableData createScheduleTable(AppShell shell) {
+        DefaultTableModel model = shell.createTableModel("ID", "Subject", "Day", "Time", "Room", "Status");
+        for (ScheduleSlot slot : shell.getStore().getSchedulesForTeacher(shell.getCurrentUser().getUserId())) {
+            model.addRow(new Object[]{
                 slot.getId(),
                 slot.getSubjectName(),
                 slot.getDay(),
@@ -38,8 +44,10 @@ final class TeacherScheduleScreen {
                 shell.friendlyStatus(slot.getStatus())
             });
         }
-        JTable scheduleTable = new JTable(scheduleModel);
+        return new ScheduleTableData(model, new JTable(model));
+    }
 
+    private static JPanel buildChangeRequestSection(AppShell shell, ScheduleTableData tableData) {
         JTextField subjectField = shell.newTextField();
         JTextField roomField = shell.newTextField();
         JTextArea reasonArea = shell.newTextArea();
@@ -47,74 +55,46 @@ final class TeacherScheduleScreen {
         JComboBox<String> startCombo = shell.newTimeCombo();
         JComboBox<String> endCombo = shell.newTimeCombo();
 
-        JButton loadSelected = new JButton("Use Selected Class");
-        AppTheme.styleSecondaryButton(loadSelected);
-        loadSelected.addActionListener(event -> {
-            int row = scheduleTable.getSelectedRow();
-            if (row < 0) {
-                JOptionPane.showMessageDialog(shell, "Choose a class first.", "My Schedule", JOptionPane.INFORMATION_MESSAGE);
-                return;
-            }
+        JButton loadButton = new JButton("Use Selected Class");
+        AppTheme.styleSecondaryButton(loadButton);
+        loadButton.addActionListener(event -> loadSelectedSchedule(shell, tableData, subjectField, roomField, dayCombo, startCombo, endCombo));
 
-            subjectField.setText(String.valueOf(scheduleModel.getValueAt(row, 1)));
-            dayCombo.setSelectedItem(scheduleModel.getValueAt(row, 2));
-            String[] timeParts = String.valueOf(scheduleModel.getValueAt(row, 3)).split(" - ");
-            if (timeParts.length == 2) {
-                startCombo.setSelectedItem(timeParts[0].trim());
-                endCombo.setSelectedItem(timeParts[1].trim());
-            }
-            roomField.setText(String.valueOf(scheduleModel.getValueAt(row, 4)));
-        });
+        JButton sendButton = new JButton("Ask for Change");
+        AppTheme.stylePrimaryButton(sendButton);
+        sendButton.addActionListener(event -> submitScheduleChange(
+                shell, tableData, subjectField, roomField, reasonArea, dayCombo, startCombo, endCombo
+        ));
 
-        JButton submit = new JButton("Ask for Change");
-        AppTheme.stylePrimaryButton(submit);
-        submit.addActionListener(event -> {
-            int row = scheduleTable.getSelectedRow();
-            if (row < 0) {
-                shell.showMessage("Choose a class first.", AppTheme.WARNING);
-                shell.refreshView();
-                return;
-            }
+        JPanel body = new JPanel(new BorderLayout(0, 12));
+        body.setOpaque(false);
+        body.add(AppFlowPanels.createSimpleList("How to ask for a change", java.util.List.of(
+                "Choose the class from the schedule above.",
+                "Press Use Selected Class.",
+                "Change only the details that are wrong, then send it."
+        )), BorderLayout.NORTH);
 
-            shell.showResult(store.submitScheduleChangeRequest(
-                    user.getUserId(),
-                    (Integer) scheduleModel.getValueAt(row, 0),
-                    subjectField.getText(),
-                    (DayOfWeek) dayCombo.getSelectedItem(),
-                    shell.parseTimeValue((String) startCombo.getSelectedItem()),
-                    shell.parseTimeValue((String) endCombo.getSelectedItem()),
-                    roomField.getText(),
-                    reasonArea.getText(),
-                    user.getFullName()
-            ));
-            shell.refreshView();
-        });
+        JPanel form = new JPanel(new GridLayout(3, 2, 12, 12));
+        form.setOpaque(false);
+        form.add(shell.labeledField("Subject", subjectField));
+        form.add(shell.labeledField("Room", roomField));
+        form.add(shell.labeledField("Day", dayCombo));
+        form.add(shell.labeledField("Start time", startCombo));
+        form.add(shell.labeledField("End time", endCombo));
+        form.add(shell.labeledField("Reason", new javax.swing.JScrollPane(reasonArea)));
+        body.add(form, BorderLayout.CENTER);
 
-        JPanel scheduleBody = new JPanel(new BorderLayout(0, 12));
-        scheduleBody.setOpaque(false);
-        scheduleBody.add(shell.wrapTable(scheduleTable), BorderLayout.CENTER);
-        JPanel correctionGrid = new JPanel(new GridLayout(3, 2, 12, 12));
-        correctionGrid.setOpaque(false);
-        correctionGrid.add(shell.labeledField("Subject", subjectField));
-        correctionGrid.add(shell.labeledField("Room", roomField));
-        correctionGrid.add(shell.labeledField("Day", dayCombo));
-        correctionGrid.add(shell.labeledField("Start Time", startCombo));
-        correctionGrid.add(shell.labeledField("End Time", endCombo));
-        correctionGrid.add(shell.labeledField("Reason", new javax.swing.JScrollPane(reasonArea)));
-        JPanel actionRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 0));
-        actionRow.setOpaque(false);
-        actionRow.add(loadSelected);
-        actionRow.add(submit);
-        JPanel correctionPanel = new JPanel(new BorderLayout(0, 12));
-        correctionPanel.setOpaque(false);
-        correctionPanel.add(correctionGrid, BorderLayout.CENTER);
-        correctionPanel.add(actionRow, BorderLayout.SOUTH);
-        scheduleBody.add(correctionPanel, BorderLayout.SOUTH);
-        page.add(shell.createSection("My Schedule", "Choose a class, update the form, and send the change to the admin.", scheduleBody));
-        page.add(Box.createVerticalStrut(16));
+        JPanel actions = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 0));
+        actions.setOpaque(false);
+        actions.add(loadButton);
+        actions.add(sendButton);
+        body.add(actions, BorderLayout.SOUTH);
 
+        return shell.createSection("Ask for a schedule change", "Send the change to the admin for approval.", body);
+    }
+
+    private static JPanel buildRequestHistorySection(AppShell shell) {
         DefaultTableModel requestModel = shell.createTableModel("ID", "Old", "Requested", "Status", "Reason", "Reviewed By");
-        for (ScheduleChangeRequest request : store.getScheduleRequestsForTeacher(user.getUserId())) {
+        for (ScheduleChangeRequest request : shell.getStore().getScheduleRequestsForTeacher(shell.getCurrentUser().getUserId())) {
             requestModel.addRow(new Object[]{
                 request.getId(),
                 request.getOldValue(),
@@ -124,8 +104,63 @@ final class TeacherScheduleScreen {
                 request.getReviewedBy() == null ? "-" : request.getReviewedBy()
             });
         }
-        JTable requestTable = new JTable(requestModel);
-        page.add(shell.createSection("Schedule Requests", "Check whether your schedule requests are still waiting, approved, or rejected.", shell.wrapTable(requestTable)));
-        return page;
+
+        return shell.createSection("Your requests", "Check if your request is still waiting, approved, or rejected.",
+                shell.wrapTable(new JTable(requestModel)));
+    }
+
+    private static void loadSelectedSchedule(AppShell shell, ScheduleTableData tableData,
+            JTextField subjectField, JTextField roomField, JComboBox<DayOfWeek> dayCombo,
+            JComboBox<String> startCombo, JComboBox<String> endCombo) {
+        int row = tableData.table.getSelectedRow();
+        if (row < 0) {
+            shell.showMessage("Choose a class first.", AppTheme.WARNING);
+            shell.refreshView();
+            return;
+        }
+
+        subjectField.setText(String.valueOf(tableData.model.getValueAt(row, 1)));
+        dayCombo.setSelectedItem(tableData.model.getValueAt(row, 2));
+        String[] timeParts = String.valueOf(tableData.model.getValueAt(row, 3)).split(" - ");
+        if (timeParts.length == 2) {
+            startCombo.setSelectedItem(timeParts[0].trim());
+            endCombo.setSelectedItem(timeParts[1].trim());
+        }
+        roomField.setText(String.valueOf(tableData.model.getValueAt(row, 4)));
+    }
+
+    private static void submitScheduleChange(AppShell shell, ScheduleTableData tableData,
+            JTextField subjectField, JTextField roomField, JTextArea reasonArea, JComboBox<DayOfWeek> dayCombo,
+            JComboBox<String> startCombo, JComboBox<String> endCombo) {
+        int row = tableData.table.getSelectedRow();
+        if (row < 0) {
+            shell.showMessage("Choose a class first.", AppTheme.WARNING);
+            shell.refreshView();
+            return;
+        }
+
+        shell.showResult(shell.getStore().submitScheduleChangeRequest(
+                shell.getCurrentUser().getUserId(),
+                (Integer) tableData.model.getValueAt(row, 0),
+                subjectField.getText(),
+                (DayOfWeek) dayCombo.getSelectedItem(),
+                shell.parseTimeValue((String) startCombo.getSelectedItem()),
+                shell.parseTimeValue((String) endCombo.getSelectedItem()),
+                roomField.getText(),
+                reasonArea.getText(),
+                shell.getCurrentUser().getFullName()
+        ));
+        shell.refreshView();
+    }
+
+    private static final class ScheduleTableData {
+
+        private final DefaultTableModel model;
+        private final JTable table;
+
+        private ScheduleTableData(DefaultTableModel model, JTable table) {
+            this.model = model;
+            this.table = table;
+        }
     }
 }
