@@ -27,20 +27,10 @@ public final class DatabaseConfig {
     }
 
     public static DatabaseConfig loadDefault() {
-        // Mini-code guide:
-        // 1. Use config/database.properties as the default MariaDB/XAMPP settings file.
-        // 2. Delegate to load(Path) so validation rules live in one method.
         return load(Path.of("config", "database.properties"));
     }
 
     public static DatabaseConfig load(Path path) {
-        // Mini-code guide:
-        // 1. If the file is missing, return a disabled config plus a message explaining how to create it.
-        // 2. Load properties with java.util.Properties.
-        // 3. Read db.enabled, db.driverClass, db.url, db.username, and db.password.
-        // 4. Trim the values so accidental spaces do not break login.
-        // 5. If required fields are missing, force enabled = false and explain the problem in statusMessage.
-        // 6. Return the immutable DatabaseConfig for the rest of the app to reuse.
         if (!Files.exists(path)) {
             return new DatabaseConfig(
                     false,
@@ -88,45 +78,30 @@ public final class DatabaseConfig {
     }
 
     public boolean isEnabled() {
-        // Mini-code guide:
-        // 1. Return whether DB-backed login/features are allowed after config validation.
         return enabled;
     }
 
     public String getDriverClass() {
-        // Mini-code guide:
-        // 1. Return the JDBC driver class name that DatabaseManager should load.
         return driverClass;
     }
 
     public String getUrl() {
-        // Mini-code guide:
-        // 1. Return the JDBC URL for MariaDB/MySQL connection creation.
         return url;
     }
 
     public String getUsername() {
-        // Mini-code guide:
-        // 1. Return the DB username used by DriverManager.getConnection(...).
         return username;
     }
 
     public String getPassword() {
-        // Mini-code guide:
-        // 1. Return the DB password.
-        // 2. Avoid logging this value anywhere in the UI or console.
         return password;
     }
 
     public Path getSourcePath() {
-        // Mini-code guide:
-        // 1. Return the config file path so setup/status messages can point to the right file.
         return sourcePath;
     }
 
     public String getStatusMessage() {
-        // Mini-code guide:
-        // 1. Return the last readiness/setup message for login and diagnostics.
         return statusMessage;
     }
 }

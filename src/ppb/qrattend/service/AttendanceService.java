@@ -4,215 +4,229 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.sql.Statement;
-import java.sql.Timestamp;
-import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import ppb.qrattend.db.DatabaseManager;
 import ppb.qrattend.db.SecurityUtil;
-import ppb.qrattend.model.AppDomain.AttendanceRecord;
-import ppb.qrattend.model.AppDomain.AttendanceSession;
-import ppb.qrattend.model.AppDomain.AttendanceSource;
-import ppb.qrattend.model.AppDomain.AttendanceStatus;
-import ppb.qrattend.model.AppDomain.SessionState;
+import ppb.qrattend.model.CoreModels.AttendanceMethod;
+import ppb.qrattend.model.CoreModels.AttendanceRecord;
+import ppb.qrattend.model.CoreModels.AttendanceSession;
+import ppb.qrattend.model.CoreModels.AttendanceStatus;
+import ppb.qrattend.model.CoreModels.SessionStatus;
+import ppb.qrattend.model.CoreModels.Student;
+import ppb.qrattend.util.AppClock;
 
 public final class AttendanceService {
 
-    private static final String SELECT_TEACHER_SQL = """
-            SELECT user_id, full_name, account_status
-            FROM users
-            WHERE user_id = ?
-              AND role = 'TEACHER'
+    private static final String SELECT_OPEN_TEMP_SQL = """
+            SELECT
+                s.session_id,
+                s.teacher_user_id,
+                s.section_id,
+                sec.section_name,
+                s.subject_id,
+                sub.subject_name,
+                COALESCE(r.room_name, '') AS room_name,
+                s.session_date,
+                s.opened_at,
+                s.is_temporary,
+                COALESCE(s.reason, '') AS reason,
+                s.status
+            FROM attendance_sessions s
+            INNER JOIN sections sec
+                ON sec.section_id = s.section_id
+            INNER JOIN subjects sub
+                ON sub.subject_id = s.subject_id
+            LEFT JOIN rooms r
+                ON r.room_id = s.room_id
+            WHERE s.teacher_user_id = ?
+              AND s.status = 'OPEN'
+              AND s.is_temporary = 1
+            ORDER BY s.session_id DESC
             LIMIT 1
             """;
 
-    private static final String SELECT_OVERRIDE_SESSION_SQL = """
-            SELECT session_id, teacher_user_id, subject_name, room_name, session_state, opened_at, override_reason
-            FROM attendance_sessions
-            WHERE teacher_user_id = ?
-              AND session_mode = 'OVERRIDE'
-              AND session_state = 'OVERRIDE_ACTIVE'
-            ORDER BY opened_at DESC, session_id DESC
+    // Scheduled classes should stay open for the full saved end minute.
+    // Example: a class that ends at 3:00 PM is still treated as open at 3:00 PM,
+    // then closes after that minute has passed.
+    private static final String SELECT_CURRENT_SCHEDULE_SQL = """
+            SELECT
+                sc.schedule_id,
+                sc.teacher_user_id,
+                sc.section_id,
+                sec.section_name,
+                sc.subject_id,
+                sub.subject_name,
+                sc.room_id,
+                r.room_name,
+                sc.day_of_week,
+                sc.start_time,
+                sc.end_time
+            FROM schedules sc
+            INNER JOIN sections sec
+                ON sec.section_id = sc.section_id
+            INNER JOIN subjects sub
+                ON sub.subject_id = sc.subject_id
+            INNER JOIN rooms r
+                ON r.room_id = sc.room_id
+            WHERE sc.teacher_user_id = ?
+              AND sc.is_active = 1
+              AND sc.day_of_week = ?
+              AND sc.start_time <= ?
+              AND sc.end_time >= ?
+            ORDER BY sc.start_time ASC
             LIMIT 1
             """;
 
-    private static final String SELECT_ACTIVE_SCHEDULE_SQL = """
-            SELECT schedule_id, teacher_user_id, subject_name, day_of_week, start_time, end_time, room_name
-            FROM teacher_schedules
-            WHERE teacher_user_id = ?
-              AND day_of_week = ?
-              AND schedule_status = 'APPROVED'
-              AND start_time <= ?
-              AND end_time >= ?
-            ORDER BY start_time ASC
-            LIMIT 1
-            """;
-
-    private static final String SELECT_ACTIVE_SCHEDULE_SESSION_SQL = """
-            SELECT session_id, teacher_user_id, subject_name, room_name, session_state, opened_at, override_reason
-            FROM attendance_sessions
-            WHERE teacher_user_id = ?
-              AND schedule_id = ?
-              AND session_date = ?
-              AND session_mode = 'SCHEDULE'
-              AND session_state = 'ACTIVE'
-            ORDER BY opened_at DESC, session_id DESC
-            LIMIT 1
-            """;
-
-    private static final String INSERT_SCHEDULE_SESSION_SQL = """
-            INSERT INTO attendance_sessions
-                (schedule_id, teacher_user_id, subject_name, room_name, session_date, opened_at, session_state, session_mode)
-            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, 'ACTIVE', 'SCHEDULE')
-            """;
-
-    private static final String INSERT_OVERRIDE_SESSION_SQL = """
-            INSERT INTO attendance_sessions
-                (schedule_id, teacher_user_id, subject_name, room_name, session_date, opened_at, session_state, session_mode, override_reason)
-            VALUES (NULL, ?, ?, 'Override', ?, CURRENT_TIMESTAMP, 'OVERRIDE_ACTIVE', 'OVERRIDE', ?)
-            """;
-
-    private static final String CLOSE_OVERRIDE_SESSION_SQL = """
+    private static final String CLOSE_OLD_SCHEDULE_SESSIONS_SQL = """
             UPDATE attendance_sessions
-            SET session_state = 'CLOSED',
-                closed_at = CURRENT_TIMESTAMP
+            SET status = 'CLOSED', closed_at = CURRENT_TIMESTAMP
             WHERE teacher_user_id = ?
-              AND session_mode = 'OVERRIDE'
-              AND session_state = 'OVERRIDE_ACTIVE'
+              AND status = 'OPEN'
+              AND is_temporary = 0
+              AND (session_date <> ? OR schedule_id <> ?)
             """;
 
-    private static final String CLOSE_EXPIRED_SCHEDULE_SESSIONS_SQL = """
+    private static final String SELECT_OPEN_SCHEDULE_SESSION_SQL = """
+            SELECT
+                s.session_id,
+                s.teacher_user_id,
+                s.section_id,
+                sec.section_name,
+                s.subject_id,
+                sub.subject_name,
+                COALESCE(r.room_name, '') AS room_name,
+                s.session_date,
+                s.opened_at,
+                s.is_temporary,
+                COALESCE(s.reason, '') AS reason,
+                s.status
+            FROM attendance_sessions s
+            INNER JOIN sections sec
+                ON sec.section_id = s.section_id
+            INNER JOIN subjects sub
+                ON sub.subject_id = s.subject_id
+            LEFT JOIN rooms r
+                ON r.room_id = s.room_id
+            WHERE s.teacher_user_id = ?
+              AND s.schedule_id = ?
+              AND s.session_date = ?
+              AND s.status = 'OPEN'
+              AND s.is_temporary = 0
+            LIMIT 1
+            """;
+
+    private static final String INSERT_SESSION_SQL = """
+            INSERT INTO attendance_sessions
+                (teacher_user_id, schedule_id, section_id, subject_id, room_id, session_date, is_temporary, reason, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN')
+            """;
+
+    private static final String CLOSE_TEMP_SQL = """
             UPDATE attendance_sessions
-            SET session_state = 'CLOSED',
-                closed_at = CURRENT_TIMESTAMP
+            SET status = 'CLOSED', closed_at = CURRENT_TIMESTAMP
             WHERE teacher_user_id = ?
-              AND session_mode = 'SCHEDULE'
-              AND session_state = 'ACTIVE'
-              AND session_date = ?
-              AND schedule_id NOT IN (
-                  SELECT schedule_id
-                  FROM teacher_schedules
-                  WHERE teacher_user_id = ?
-                    AND day_of_week = ?
-                    AND schedule_status = 'APPROVED'
-                    AND start_time <= ?
-                    AND end_time >= ?
-              )
+              AND status = 'OPEN'
+              AND is_temporary = 1
+            """;
+
+    private static final String SELECT_STUDENTS_FOR_SECTION_SQL = """
+            SELECT
+                s.student_id,
+                s.student_code,
+                s.full_name,
+                s.email,
+                s.section_id,
+                sec.section_name,
+                s.is_active,
+                s.qr_status
+            FROM students s
+            INNER JOIN sections sec
+                ON sec.section_id = s.section_id
+            WHERE s.section_id = ?
+              AND s.is_active = 1
+            ORDER BY s.full_name ASC
             """;
 
     private static final String SELECT_STUDENT_FOR_QR_SQL = """
             SELECT
-                sp.student_pk,
-                sp.student_code,
-                sp.full_name,
-                sp.email,
-                sqt.qr_id
-            FROM teacher_student_assignments tsa
-            INNER JOIN student_profiles sp
-                ON sp.student_pk = tsa.student_pk
-            LEFT JOIN student_qr_tokens sqt
-                ON sqt.student_pk = sp.student_pk
-               AND sqt.is_active = 1
-            WHERE tsa.teacher_user_id = ?
-              AND tsa.assignment_status = 'ACTIVE'
-              AND sp.account_status = 'ACTIVE'
+                s.student_id,
+                s.student_code,
+                s.full_name,
+                sec.section_name
+            FROM students s
+            INNER JOIN sections sec
+                ON sec.section_id = s.section_id
+            WHERE s.section_id = ?
+              AND s.is_active = 1
               AND (
-                    UPPER(sp.student_code) = ?
-                 OR LOWER(sp.email) = ?
-                 OR COALESCE(sqt.token_hash, '') = ?
+                    s.qr_hash = ?
+                 OR UPPER(s.student_code) = ?
+                 OR LOWER(s.email) = ?
               )
-            ORDER BY sqt.qr_id DESC
             LIMIT 1
             """;
 
-    private static final String SELECT_STUDENT_FOR_MANUAL_SQL = """
+    private static final String SELECT_STUDENT_IN_SECTION_SQL = """
             SELECT
-                sp.student_pk,
-                sp.student_code,
-                sp.full_name,
-                sp.email
-            FROM teacher_student_assignments tsa
-            INNER JOIN student_profiles sp
-                ON sp.student_pk = tsa.student_pk
-            WHERE tsa.teacher_user_id = ?
-              AND tsa.assignment_status = 'ACTIVE'
-              AND sp.account_status = 'ACTIVE'
-              AND UPPER(sp.student_code) = ?
+                s.student_id,
+                s.student_code,
+                s.full_name,
+                sec.section_name
+            FROM students s
+            INNER JOIN sections sec
+                ON sec.section_id = s.section_id
+            WHERE s.student_id = ?
+              AND s.section_id = ?
+              AND s.is_active = 1
             LIMIT 1
             """;
 
-    private static final String INSERT_ATTENDANCE_SQL = """
-            INSERT INTO attendance_records
-                (session_id, student_pk, teacher_user_id, subject_name, attendance_source, attendance_status, note, recorded_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            """;
-
-    private static final String SELECT_DUPLICATE_SQL = """
+    private static final String CHECK_DUPLICATE_SQL = """
             SELECT 1
-            FROM attendance_records ar
-            INNER JOIN student_profiles sp
-                ON sp.student_pk = ar.student_pk
-            WHERE ar.session_id = ?
-              AND UPPER(sp.student_code) = ?
+            FROM attendance_records
+            WHERE session_id = ?
+              AND student_id = ?
             LIMIT 1
             """;
 
-    private static final String INSERT_SCAN_LOG_SQL = """
-            INSERT INTO qr_scan_logs
-                (session_id, student_pk, token_hash, payload_preview, scan_result, rejection_reason, scanned_at)
-            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    private static final String INSERT_RECORD_SQL = """
+            INSERT INTO attendance_records
+                (session_id, student_id, attendance_method, attendance_status, note)
+            VALUES (?, ?, ?, ?, ?)
             """;
 
-    private static final String UPDATE_QR_LAST_USED_SQL = """
-            UPDATE student_qr_tokens
-            SET last_used_at = CURRENT_TIMESTAMP
-            WHERE qr_id = ?
-            """;
+    private static final String INSERT_ABSENT_SQL =
+            "INSERT INTO attendance_records " +
+            "    (session_id, student_id, attendance_method, attendance_status, note) " +
+            "VALUES (?, ?, 'MANUAL', 'ABSENT', '')";
 
-    private static final String INSERT_AUDIT_LOG_SQL = """
-            INSERT INTO audit_logs
-                (actor_user_id, action_type, entity_type, entity_id, old_values_json, new_values_json, notes, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            """;
-
-    private static final String SELECT_ATTENDANCE_SQL = """
+    private static final String SELECT_RECENT_SQL = """
             SELECT
-                ar.attendance_id,
-                sp.student_code,
-                ar.teacher_user_id,
-                sp.full_name,
-                ar.subject_name,
+                ar.record_id,
+                st.student_code,
+                st.full_name AS student_name,
+                sec.section_name,
+                sub.subject_name,
                 ar.recorded_at,
-                ar.attendance_source,
+                ar.attendance_method,
                 ar.attendance_status,
                 ar.note
             FROM attendance_records ar
-            INNER JOIN student_profiles sp
-                ON sp.student_pk = ar.student_pk
-            ORDER BY ar.recorded_at DESC, ar.attendance_id DESC
-            """;
-
-    private static final String SELECT_ATTENDANCE_FOR_TEACHER_SQL = """
-            SELECT
-                ar.attendance_id,
-                sp.student_code,
-                ar.teacher_user_id,
-                sp.full_name,
-                ar.subject_name,
-                ar.recorded_at,
-                ar.attendance_source,
-                ar.attendance_status,
-                ar.note
-            FROM attendance_records ar
-            INNER JOIN student_profiles sp
-                ON sp.student_pk = ar.student_pk
-            WHERE ar.teacher_user_id = ?
-            ORDER BY ar.recorded_at DESC, ar.attendance_id DESC
+            INNER JOIN attendance_sessions sess
+                ON sess.session_id = ar.session_id
+            INNER JOIN students st
+                ON st.student_id = ar.student_id
+            INNER JOIN sections sec
+                ON sec.section_id = st.section_id
+            INNER JOIN subjects sub
+                ON sub.subject_id = sess.subject_id
+            %s
+            ORDER BY ar.record_id DESC
+            LIMIT ?
             """;
 
     private final DatabaseManager databaseManager;
@@ -225,811 +239,539 @@ public final class AttendanceService {
         this.databaseManager = databaseManager;
     }
 
-    public boolean isReady() {
-        return databaseManager.isReady();
-    }
-
-    public ServiceResult<AttendanceSession> getSessionForTeacher(int teacherId) {
+    public ServiceResult<AttendanceSession> getCurrentSessionForTeacher(int teacherId) {
         if (teacherId <= 0) {
-            return ServiceResult.failure("Teacher account is required.");
+            return ServiceResult.failure("Teacher not found.");
         }
         if (!databaseManager.isReady()) {
             return ServiceResult.failure(databaseManager.getStatusMessage());
         }
 
         try (Connection connection = databaseManager.openConnection()) {
-            TeacherRow teacher = loadTeacher(connection, teacherId);
-            if (teacher == null || !"ACTIVE".equalsIgnoreCase(teacher.accountStatus)) {
-                return ServiceResult.failure("Teacher account was not found or is inactive.");
+            AttendanceSession tempSession = loadTemporarySession(connection, teacherId);
+            if (tempSession != null) {
+                return ServiceResult.success("Temporary class loaded.", tempSession);
             }
 
-            AttendanceSession overrideSession = loadOverrideSession(connection, teacherId);
-            if (overrideSession != null) {
-                return ServiceResult.success("Loaded override attendance session.", overrideSession);
-            }
-
-            ScheduleWindowRow activeSchedule = loadActiveSchedule(connection, teacherId, LocalDate.now(), LocalTime.now().withNano(0));
-            if (activeSchedule == null) {
-                closeExpiredScheduleSessions(connection, teacherId);
-                AttendanceSession locked = new AttendanceSession(0, teacherId, "No active class", SessionState.LOCKED,
-                        LocalDateTime.now(), "-", "No approved schedule is live right now.", false);
-                return ServiceResult.success("Teacher has no active schedule window.", locked);
-            }
-
-            AttendanceSession scheduleSession = ensureScheduleSession(connection, teacherId, activeSchedule);
-            return ServiceResult.success("Loaded schedule attendance session.", scheduleSession);
-        } catch (SQLException ex) {
-            return ServiceResult.failure("Could not resolve the attendance session: " + ex.getMessage());
-        }
-    }
-
-    public ServiceResult<AttendanceSession> openOverrideSession(int teacherId, String subjectName, String reason) {
-        String normalizedSubject = normalize(subjectName);
-        String normalizedReason = normalize(reason);
-        if (!databaseManager.isReady()) {
-            return ServiceResult.failure(databaseManager.getStatusMessage());
-        }
-        if (teacherId <= 0) {
-            return ServiceResult.failure("Teacher account is required.");
-        }
-        if (normalizedSubject.isBlank() || normalizedReason.isBlank()) {
-            return ServiceResult.failure("Override subject and reason are required.");
-        }
-
-        try (Connection connection = databaseManager.openConnection()) {
-            connection.setAutoCommit(false);
-            try {
-                TeacherRow teacher = loadTeacher(connection, teacherId);
-                if (teacher == null || !"ACTIVE".equalsIgnoreCase(teacher.accountStatus)) {
-                    connection.rollback();
-                    return ServiceResult.failure("Teacher account was not found or is inactive.");
-                }
-                if (loadOverrideSession(connection, teacherId) != null) {
-                    connection.rollback();
-                    return ServiceResult.failure("An override session is already open.");
-                }
-                if (loadActiveSchedule(connection, teacherId, LocalDate.now(), LocalTime.now().withNano(0)) != null) {
-                    connection.rollback();
-                    return ServiceResult.failure("A scheduled class is already active, so an override is not needed.");
-                }
-
-                long sessionId = insertOverrideSession(connection, teacherId, normalizedSubject, normalizedReason);
-                insertAuditLog(connection, teacherId, "ATTENDANCE_OVERRIDE_OPEN", "ATTENDANCE_SESSION", String.valueOf(sessionId),
-                        null,
-                        buildSessionJson(normalizedSubject, "OVERRIDE_ACTIVE", "Override", normalizedReason),
-                        "Teacher opened an override attendance session.");
-                connection.commit();
-                AttendanceSession session = new AttendanceSession((int) sessionId, teacherId, normalizedSubject, SessionState.OVERRIDE_ACTIVE,
-                        LocalDateTime.now(), "Override", normalizedReason, true);
-                return ServiceResult.success("Override attendance session opened for " + normalizedSubject + ".", session);
-            } catch (SQLException ex) {
-                rollbackQuietly(connection);
-                return ServiceResult.failure("Could not open the override session: " + ex.getMessage());
-            } finally {
-                restoreAutoCommit(connection);
-            }
-        } catch (SQLException ex) {
-            return ServiceResult.failure("Could not open the override session: " + ex.getMessage());
-        }
-    }
-
-    public ServiceResult<Void> closeOverrideSession(int teacherId) {
-        if (!databaseManager.isReady()) {
-            return ServiceResult.failure(databaseManager.getStatusMessage());
-        }
-        if (teacherId <= 0) {
-            return ServiceResult.failure("Teacher account is required.");
-        }
-
-        try (Connection connection = databaseManager.openConnection()) {
-            connection.setAutoCommit(false);
-            try {
-                AttendanceSession overrideSession = loadOverrideSession(connection, teacherId);
-                if (overrideSession == null) {
-                    connection.rollback();
-                    return ServiceResult.failure("No open override session found.");
-                }
-                try (PreparedStatement statement = connection.prepareStatement(CLOSE_OVERRIDE_SESSION_SQL)) {
-                    statement.setInt(1, teacherId);
-                    statement.executeUpdate();
-                }
-                insertAuditLog(connection, teacherId, "ATTENDANCE_OVERRIDE_CLOSE", "ATTENDANCE_SESSION", String.valueOf(overrideSession.getId()),
-                        buildSessionJson(overrideSession.getSubjectName(), overrideSession.getState().name(), overrideSession.getRoom(), overrideSession.getNote()),
-                        buildSessionJson(overrideSession.getSubjectName(), SessionState.CLOSED.name(), overrideSession.getRoom(), overrideSession.getNote()),
-                        "Teacher closed an override attendance session.");
-                connection.commit();
-                return ServiceResult.success("Override session closed.", null);
-            } catch (SQLException ex) {
-                rollbackQuietly(connection);
-                return ServiceResult.failure("Could not close the override session: " + ex.getMessage());
-            } finally {
-                restoreAutoCommit(connection);
-            }
-        } catch (SQLException ex) {
-            return ServiceResult.failure("Could not close the override session: " + ex.getMessage());
-        }
-    }
-
-    public ServiceResult<AttendanceRecord> recordQrAttendance(int teacherId, String qrPayload) {
-        String normalizedPayload = normalize(qrPayload);
-        if (!databaseManager.isReady()) {
-            return ServiceResult.failure(databaseManager.getStatusMessage());
-        }
-        if (teacherId <= 0) {
-            return ServiceResult.failure("Teacher account is required.");
-        }
-        if (normalizedPayload.isBlank()) {
-            return ServiceResult.failure("Scan or enter a QR value first.");
-        }
-        String payloadHash = SecurityUtil.sha256Hex(normalizedPayload);
-
-        try (Connection connection = databaseManager.openConnection()) {
-            connection.setAutoCommit(false);
-            try {
-                LiveSessionContext session = resolveLiveSession(connection, teacherId);
-                if (session == null || session.session.getState() == SessionState.LOCKED) {
-                    connection.rollback();
-                    return ServiceResult.failure("No scheduled class is active. Open an override session to scan.");
-                }
-
-                StudentScanRow student = loadStudentForQr(connection, teacherId, normalizedPayload);
-                if (student == null) {
-                    insertScanLog(connection, session.session.getId(), null, payloadHash, "REJECTED", "Invalid or unassigned QR code.");
-                    connection.commit();
-                    return ServiceResult.failure("No student matched that QR token.");
-                }
-                if (isDuplicateAttendance(connection, session.session.getId(), student.studentCode)) {
-                    insertScanLog(connection, session.session.getId(), student.studentPk, payloadHash, "DUPLICATE", "Student already recorded for this session.");
-                    connection.commit();
-                    return ServiceResult.warning(student.fullName + " is already marked for this session.", null);
-                }
-
-                AttendanceStatus status = deriveAttendanceStatus(session);
-                String note = session.session.isOverrideSession()
-                        ? "Captured from QR during override: " + session.session.getNote()
-                        : "Captured from QR";
-                long attendanceId = insertAttendanceRecord(connection, session.session.getId(), student.studentPk, teacherId,
-                        session.session.getSubjectName(), AttendanceSource.QR, status, note);
-                insertScanLog(connection, session.session.getId(), student.studentPk, payloadHash, "ACCEPTED", null);
-                if (student.qrId != null) {
-                    updateQrLastUsed(connection, student.qrId);
-                }
-                connection.commit();
-                AttendanceRecord record = new AttendanceRecord((int) attendanceId, student.studentCode, teacherId, student.fullName,
-                        session.session.getSubjectName(), LocalDateTime.now(), AttendanceSource.QR, status, note);
-                return ServiceResult.success(student.fullName + " marked " + status.getLabel().toLowerCase(Locale.ENGLISH) + " via QR.", record);
-            } catch (SQLException ex) {
-                rollbackQuietly(connection);
-                return ServiceResult.failure("Could not save the QR attendance.");
-            } finally {
-                restoreAutoCommit(connection);
-            }
-        } catch (SQLException ex) {
-            return ServiceResult.failure("Could not save the QR attendance.");
-        }
-    }
-
-    public ServiceResult<AttendanceRecord> recordManualAttendance(int teacherId, String studentCode, String note) {
-        String normalizedStudentCode = normalizeStudentCode(studentCode);
-        String normalizedNote = normalize(note);
-        if (!databaseManager.isReady()) {
-            return ServiceResult.failure(databaseManager.getStatusMessage());
-        }
-        if (teacherId <= 0) {
-            return ServiceResult.failure("Teacher account is required.");
-        }
-        if (normalizedStudentCode.isBlank()) {
-            return ServiceResult.failure("Student ID is required.");
-        }
-
-        try (Connection connection = databaseManager.openConnection()) {
-            connection.setAutoCommit(false);
-            try {
-                LiveSessionContext session = resolveLiveSession(connection, teacherId);
-                if (session == null || session.session.getState() == SessionState.LOCKED) {
-                    connection.rollback();
-                    return ServiceResult.failure("No scheduled class is active. Open an override session first.");
-                }
-
-                StudentManualRow student = loadStudentForManual(connection, teacherId, normalizedStudentCode);
-                if (student == null) {
-                    connection.rollback();
-                    return ServiceResult.failure("Select a student from the class list.");
-                }
-                if (isDuplicateAttendance(connection, session.session.getId(), student.studentCode)) {
-                    connection.rollback();
-                    return ServiceResult.warning(student.fullName + " is already marked for this session.", null);
-                }
-
-                AttendanceStatus status = deriveAttendanceStatus(session);
-                String noteValue = normalizedNote.isBlank() ? "Manual backup entry." : normalizedNote;
-                long attendanceId = insertAttendanceRecord(connection, session.session.getId(), student.studentPk, teacherId,
-                        session.session.getSubjectName(), AttendanceSource.MANUAL, status, noteValue);
-                insertAuditLog(connection, teacherId, "ATTENDANCE_MANUAL_MARK", "ATTENDANCE_RECORD", String.valueOf(attendanceId),
-                        null,
-                        buildAttendanceJson(student.studentCode, session.session.getSubjectName(), AttendanceSource.MANUAL, status, noteValue),
-                        "Teacher marked attendance manually as backup.");
-                connection.commit();
-                AttendanceRecord record = new AttendanceRecord((int) attendanceId, student.studentCode, teacherId, student.fullName,
-                        session.session.getSubjectName(), LocalDateTime.now(), AttendanceSource.MANUAL, status, noteValue);
-                return ServiceResult.success(student.fullName + " added through backup attendance.", record);
-            } catch (SQLException ex) {
-                rollbackQuietly(connection);
-                return ServiceResult.failure("Could not save the attendance record.");
-            } finally {
-                restoreAutoCommit(connection);
-            }
-        } catch (SQLException ex) {
-            return ServiceResult.failure("Could not save the attendance record.");
-        }
-    }
-
-    public ServiceResult<Boolean> checkDuplicateAttendance(int sessionId, String studentCode) {
-        String normalizedStudentCode = normalizeStudentCode(studentCode);
-        if (sessionId <= 0) {
-            return ServiceResult.failure("Attendance session is required.");
-        }
-        if (normalizedStudentCode.isBlank()) {
-            return ServiceResult.failure("Student ID is required.");
-        }
-        if (!databaseManager.isReady()) {
-            return ServiceResult.failure(databaseManager.getStatusMessage());
-        }
-
-        try (Connection connection = databaseManager.openConnection()) {
-            return ServiceResult.success("Duplicate check completed.", isDuplicateAttendance(connection, sessionId, normalizedStudentCode));
-        } catch (SQLException ex) {
-            return ServiceResult.failure("Could not check the attendance record.");
-        }
-    }
-
-    public ServiceResult<List<AttendanceRecord>> getAttendanceRecords() {
-        if (!databaseManager.isReady()) {
-            return ServiceResult.failure(databaseManager.getStatusMessage());
-        }
-        List<AttendanceRecord> records = new ArrayList<>();
-        try (Connection connection = databaseManager.openConnection();
-                PreparedStatement statement = connection.prepareStatement(SELECT_ATTENDANCE_SQL);
-                ResultSet resultSet = statement.executeQuery()) {
-            while (resultSet.next()) {
-                records.add(mapAttendanceRecord(resultSet));
-            }
-            return ServiceResult.success("Loaded attendance records from MariaDB.", records);
-        } catch (SQLException ex) {
-            return ServiceResult.failure("Could not load attendance records.");
-        }
-    }
-
-    public ServiceResult<List<AttendanceRecord>> getAttendanceRecordsForTeacher(int teacherId) {
-        if (teacherId <= 0) {
-            return ServiceResult.failure("Teacher account is required.");
-        }
-        if (!databaseManager.isReady()) {
-            return ServiceResult.failure(databaseManager.getStatusMessage());
-        }
-        List<AttendanceRecord> records = new ArrayList<>();
-        try (Connection connection = databaseManager.openConnection();
-                PreparedStatement statement = connection.prepareStatement(SELECT_ATTENDANCE_FOR_TEACHER_SQL)) {
-            statement.setInt(1, teacherId);
-            try (ResultSet resultSet = statement.executeQuery()) {
-                while (resultSet.next()) {
-                    records.add(mapAttendanceRecord(resultSet));
-                }
-            }
-            return ServiceResult.success("Loaded teacher attendance records from MariaDB.", records);
-        } catch (SQLException ex) {
-            return ServiceResult.failure("Could not load attendance records.");
-        }
-    }
-
-    public ServiceResult<List<AttendanceRecord>> getRecentAttendanceRecords(int limit, Integer teacherId) {
-        if (limit <= 0) {
-            return ServiceResult.failure("Recent attendance limit must be greater than 0.");
-        }
-        if (!databaseManager.isReady()) {
-            return ServiceResult.failure(databaseManager.getStatusMessage());
-        }
-
-        StringBuilder sql = new StringBuilder("""
-                SELECT
-                    ar.attendance_id,
-                    sp.student_code,
-                    ar.teacher_user_id,
-                    sp.full_name,
-                    ar.subject_name,
-                    ar.recorded_at,
-                    ar.attendance_source,
-                    ar.attendance_status,
-                    ar.note
-                FROM attendance_records ar
-                INNER JOIN student_profiles sp
-                    ON sp.student_pk = ar.student_pk
-                """);
-        if (teacherId != null) {
-            sql.append(" WHERE ar.teacher_user_id = ?");
-        }
-        sql.append(" ORDER BY ar.recorded_at DESC, ar.attendance_id DESC LIMIT ?");
-
-        List<AttendanceRecord> records = new ArrayList<>();
-        try (Connection connection = databaseManager.openConnection();
-                PreparedStatement statement = connection.prepareStatement(sql.toString())) {
-            int parameterIndex = 1;
-            if (teacherId != null) {
-                statement.setInt(parameterIndex++, teacherId);
-            }
-            statement.setInt(parameterIndex, limit);
-            try (ResultSet resultSet = statement.executeQuery()) {
-                while (resultSet.next()) {
-                    records.add(mapAttendanceRecord(resultSet));
-                }
-            }
-            return ServiceResult.success("Loaded recent attendance records.", records);
-        } catch (SQLException ex) {
-            return ServiceResult.failure("Could not load recent attendance records.");
-        }
-    }
-
-    private TeacherRow loadTeacher(Connection connection, int teacherId) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(SELECT_TEACHER_SQL)) {
-            statement.setInt(1, teacherId);
-            try (ResultSet resultSet = statement.executeQuery()) {
-                if (!resultSet.next()) {
-                    return null;
-                }
-                return new TeacherRow(
-                        resultSet.getInt("user_id"),
-                        resultSet.getString("full_name"),
-                        resultSet.getString("account_status")
+            ScheduleRow currentSchedule = loadCurrentSchedule(connection, teacherId);
+            if (currentSchedule == null) {
+                closeOpenScheduleSessions(connection, teacherId, -1);
+                AttendanceSession none = new AttendanceSession(
+                        0, teacherId, 0, "No class", 0, "No class", "", AppClock.today(),
+                        AppClock.nowDateTime(), false, "", SessionStatus.NONE
                 );
+                return ServiceResult.success("No class is open.", none);
             }
+
+            closeOpenScheduleSessions(connection, teacherId, currentSchedule.scheduleId);
+            AttendanceSession session = loadOrCreateScheduleSession(connection, currentSchedule);
+            return ServiceResult.success("Current class loaded.", session);
+        } catch (SQLException ex) {
+            return ServiceResult.failure("Could not load the class.");
         }
     }
 
-    private AttendanceSession loadOverrideSession(Connection connection, int teacherId) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(SELECT_OVERRIDE_SESSION_SQL)) {
+    public ServiceResult<AttendanceSession> startTemporaryClass(int teacherId, int sectionId, int subjectId, String reason) {
+        if (teacherId <= 0 || sectionId <= 0 || subjectId <= 0) {
+            return ServiceResult.failure("Choose the section and subject first.");
+        }
+        if (!databaseManager.isReady()) {
+            return ServiceResult.failure(databaseManager.getStatusMessage());
+        }
+        try (Connection connection = databaseManager.openConnection()) {
+            connection.setAutoCommit(false);
+            try {
+                AttendanceSession tempSession = loadTemporarySession(connection, teacherId);
+                if (tempSession != null) {
+                    connection.rollback();
+                    return ServiceResult.failure("A temporary class is already open.");
+                }
+                ScheduleRow currentSchedule = loadCurrentSchedule(connection, teacherId);
+                if (currentSchedule != null) {
+                    connection.rollback();
+                    return ServiceResult.failure("You have a scheduled class right now. Use that instead of opening a temporary one.");
+                }
+                int sessionId = insertSession(connection, teacherId, null, sectionId, subjectId, null, true, safe(reason));
+                connection.commit();
+                return ServiceResult.success("Temporary class started.", loadSessionById(connection, sessionId));
+            } catch (SQLException ex) {
+                connection.rollback();
+                return ServiceResult.failure("Could not start the temporary class.");
+            } finally {
+                connection.setAutoCommit(true);
+            }
+        } catch (SQLException ex) {
+            return ServiceResult.failure("Could not start the temporary class.");
+        }
+    }
+
+    public ServiceResult<Void> endTemporaryClass(int teacherId) {
+        if (teacherId <= 0) {
+            return ServiceResult.failure("Teacher not found.");
+        }
+        if (!databaseManager.isReady()) {
+            return ServiceResult.failure(databaseManager.getStatusMessage());
+        }
+        try (Connection connection = databaseManager.openConnection();
+                PreparedStatement statement = connection.prepareStatement(CLOSE_TEMP_SQL)) {
+            statement.setInt(1, teacherId);
+            int count = statement.executeUpdate();
+            if (count == 0) {
+                return ServiceResult.failure("No temporary class is open.");
+            }
+            return ServiceResult.success("Temporary class ended.", null);
+        } catch (SQLException ex) {
+            return ServiceResult.failure("Could not end the temporary class.");
+        }
+    }
+
+    public ServiceResult<List<Student>> getCurrentClassStudents(int teacherId) {
+        ServiceResult<AttendanceSession> sessionResult = getCurrentSessionForTeacher(teacherId);
+        if (!sessionResult.isSuccess() || sessionResult.getData() == null) {
+            return ServiceResult.failure("Could not load the class.");
+        }
+        AttendanceSession session = sessionResult.getData();
+        if (session.status() == SessionStatus.NONE || session.sectionId() <= 0) {
+            return ServiceResult.success("No class is open.", new ArrayList<>());
+        }
+        return loadStudentsForSection(session.sectionId());
+    }
+
+    public ServiceResult<AttendanceRecord> markAttendanceFromQr(int teacherId, String qrValue) {
+        String cleanValue = safe(qrValue);
+        if (cleanValue.isBlank()) {
+            return ServiceResult.failure("Scan a student QR code first.");
+        }
+        ServiceResult<AttendanceSession> sessionResult = getCurrentSessionForTeacher(teacherId);
+        if (!sessionResult.isSuccess() || sessionResult.getData() == null) {
+            return ServiceResult.failure("Could not load the class.");
+        }
+        AttendanceSession session = sessionResult.getData();
+        if (session.status() == SessionStatus.NONE) {
+            return ServiceResult.failure("No class is open.");
+        }
+
+        try (Connection connection = databaseManager.openConnection()) {
+            StudentRow student = loadStudentForQr(connection, session.sectionId(), cleanValue);
+            if (student == null) {
+                return ServiceResult.failure("That QR code does not match a student in this class.");
+            }
+            if (hasAttendance(connection, session.id(), student.studentId)) {
+                return ServiceResult.warning(student.fullName + " is already marked.", null);
+            }
+            AttendanceRecord record = insertAttendance(
+                    connection,
+                    session.id(),
+                    session.subjectName(),
+                    student.studentId,
+                    student.studentCode,
+                    student.fullName,
+                    student.sectionName,
+                    AttendanceMethod.QR,
+                    AttendanceStatus.PRESENT,
+                    ""
+            );
+            return ServiceResult.success(student.fullName + " marked present.", record);
+        } catch (SQLException ex) {
+            return ServiceResult.failure("Could not save attendance.");
+        }
+    }
+
+    public ServiceResult<AttendanceRecord> markManualAttendance(int teacherId, int studentId, String note) {
+        ServiceResult<AttendanceSession> sessionResult = getCurrentSessionForTeacher(teacherId);
+        if (!sessionResult.isSuccess() || sessionResult.getData() == null) {
+            return ServiceResult.failure("Could not load the class.");
+        }
+        AttendanceSession session = sessionResult.getData();
+        if (session.status() == SessionStatus.NONE) {
+            return ServiceResult.failure("No class is open.");
+        }
+
+        try (Connection connection = databaseManager.openConnection()) {
+            StudentRow student = loadStudentInSection(connection, studentId, session.sectionId());
+            if (student == null) {
+                return ServiceResult.failure("Choose a student from this class.");
+            }
+            if (hasAttendance(connection, session.id(), student.studentId)) {
+                return ServiceResult.warning(student.fullName + " is already marked.", null);
+            }
+            AttendanceRecord record = insertAttendance(
+                    connection,
+                    session.id(),
+                    session.subjectName(),
+                    student.studentId,
+                    student.studentCode,
+                    student.fullName,
+                    student.sectionName,
+                    AttendanceMethod.MANUAL,
+                    AttendanceStatus.PRESENT,
+                    safe(note)
+            );
+            return ServiceResult.success(student.fullName + " marked present.", record);
+        } catch (SQLException ex) {
+            return ServiceResult.failure("Could not save attendance.");
+        }
+    }
+
+    public ServiceResult<List<AttendanceRecord>> getRecentRecords(Integer teacherId, int limit) {
+        if (!databaseManager.isReady()) {
+            return ServiceResult.failure(databaseManager.getStatusMessage());
+        }
+        List<AttendanceRecord> records = new ArrayList<>();
+        String filter = teacherId == null ? "" : "WHERE sess.teacher_user_id = ?";
+        try (Connection connection = databaseManager.openConnection();
+                PreparedStatement statement = connection.prepareStatement(SELECT_RECENT_SQL.formatted(filter))) {
+            int index = 1;
+            if (teacherId != null) {
+                statement.setInt(index++, teacherId);
+            }
+            statement.setInt(index, Math.max(1, limit));
+            try (ResultSet resultSet = statement.executeQuery()) {
+                while (resultSet.next()) {
+                    records.add(new AttendanceRecord(
+                            resultSet.getInt("record_id"),
+                            resultSet.getString("student_code"),
+                            resultSet.getString("student_name"),
+                            resultSet.getString("section_name"),
+                            resultSet.getString("subject_name"),
+                            resultSet.getTimestamp("recorded_at").toLocalDateTime(),
+                            AttendanceMethod.valueOf(resultSet.getString("attendance_method")),
+                            AttendanceStatus.valueOf(resultSet.getString("attendance_status")),
+                            resultSet.getString("note")
+                    ));
+                }
+            }
+            return ServiceResult.success("Attendance records loaded.", records);
+        } catch (SQLException ex) {
+            return ServiceResult.failure("Could not load attendance records.");
+        }
+    }
+
+    public ServiceResult<Integer> markAllAbsent(int teacherId) {
+        ServiceResult<AttendanceSession> sessionResult = getCurrentSessionForTeacher(teacherId);
+        if (!sessionResult.isSuccess() || sessionResult.getData() == null) {
+            return ServiceResult.failure("Could not load the class.");
+        }
+        AttendanceSession session = sessionResult.getData();
+        if (session.status() == SessionStatus.NONE) {
+            return ServiceResult.failure("No class is open.");
+        }
+
+        ServiceResult<List<Student>> studentsResult = loadStudentsForSection(session.sectionId());
+        if (!studentsResult.isSuccess() || studentsResult.getData() == null) {
+            return ServiceResult.failure("Could not load students for this class.");
+        }
+        List<Student> students = studentsResult.getData();
+
+        try (Connection connection = databaseManager.openConnection()) {
+            connection.setAutoCommit(false);
+            try {
+                int count = 0;
+                for (int i = 0; i < students.size(); i++) {
+                    Student student = students.get(i);
+                    if (!hasAttendance(connection, session.id(), student.id())) {
+                        try (PreparedStatement statement = connection.prepareStatement(INSERT_ABSENT_SQL)) {
+                            statement.setInt(1, session.id());
+                            statement.setInt(2, student.id());
+                            statement.executeUpdate();
+                        }
+                        count++;
+                    }
+                }
+                connection.commit();
+                if (count == 0) {
+                    return ServiceResult.success("All students are already marked.", 0);
+                }
+                return ServiceResult.success("Marked " + count + " students absent.", count);
+            } catch (SQLException ex) {
+                connection.rollback();
+                return ServiceResult.failure("Could not mark students absent.");
+            } finally {
+                connection.setAutoCommit(true);
+            }
+        } catch (SQLException ex) {
+            return ServiceResult.failure("Could not mark students absent.");
+        }
+    }
+
+    private ServiceResult<List<Student>> loadStudentsForSection(int sectionId) {
+        List<Student> students = new ArrayList<>();
+        try (Connection connection = databaseManager.openConnection();
+                PreparedStatement statement = connection.prepareStatement(SELECT_STUDENTS_FOR_SECTION_SQL)) {
+            statement.setInt(1, sectionId);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                while (resultSet.next()) {
+                    students.add(new Student(
+                            resultSet.getInt("student_id"),
+                            resultSet.getString("student_code"),
+                            resultSet.getString("full_name"),
+                            resultSet.getString("email"),
+                            resultSet.getInt("section_id"),
+                            resultSet.getString("section_name"),
+                            resultSet.getBoolean("is_active"),
+                            mapEmailStatus(resultSet.getString("qr_status"))
+                    ));
+                }
+            }
+            return ServiceResult.success("Students loaded.", students);
+        } catch (SQLException ex) {
+            return ServiceResult.failure("Could not load students.");
+        }
+    }
+
+    private AttendanceSession loadTemporarySession(Connection connection, int teacherId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(SELECT_OPEN_TEMP_SQL)) {
             statement.setInt(1, teacherId);
             try (ResultSet resultSet = statement.executeQuery()) {
                 if (!resultSet.next()) {
                     return null;
                 }
-                return mapSession(resultSet, true);
+                return mapSession(resultSet);
             }
         }
     }
 
-    private ScheduleWindowRow loadActiveSchedule(Connection connection, int teacherId, LocalDate date, LocalTime time) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(SELECT_ACTIVE_SCHEDULE_SQL)) {
+    private ScheduleRow loadCurrentSchedule(Connection connection, int teacherId) throws SQLException {
+        LocalDate today = AppClock.today();
+        LocalTime now = AppClock.nowTime();
+        try (PreparedStatement statement = connection.prepareStatement(SELECT_CURRENT_SCHEDULE_SQL)) {
             statement.setInt(1, teacherId);
-            statement.setInt(2, date.getDayOfWeek().getValue());
-            statement.setTime(3, java.sql.Time.valueOf(time));
-            statement.setTime(4, java.sql.Time.valueOf(time));
+            statement.setInt(2, today.getDayOfWeek().getValue());
+            statement.setTime(3, java.sql.Time.valueOf(now));
+            statement.setTime(4, java.sql.Time.valueOf(now));
             try (ResultSet resultSet = statement.executeQuery()) {
                 if (!resultSet.next()) {
                     return null;
                 }
-                return new ScheduleWindowRow(
+                return new ScheduleRow(
                         resultSet.getInt("schedule_id"),
-                        resultSet.getInt("teacher_user_id"),
+                        teacherId,
+                        resultSet.getInt("section_id"),
+                        resultSet.getString("section_name"),
+                        resultSet.getInt("subject_id"),
                         resultSet.getString("subject_name"),
-                        dayOfWeek(resultSet.getInt("day_of_week")),
-                        resultSet.getTime("start_time").toLocalTime(),
-                        resultSet.getTime("end_time").toLocalTime(),
+                        resultSet.getInt("room_id"),
                         resultSet.getString("room_name")
                 );
             }
         }
     }
 
-    private AttendanceSession ensureScheduleSession(Connection connection, int teacherId, ScheduleWindowRow schedule) throws SQLException {
-        LocalDate today = LocalDate.now();
-        try (PreparedStatement statement = connection.prepareStatement(SELECT_ACTIVE_SCHEDULE_SESSION_SQL)) {
+    private void closeOpenScheduleSessions(Connection connection, int teacherId, int currentScheduleId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(CLOSE_OLD_SCHEDULE_SESSIONS_SQL)) {
             statement.setInt(1, teacherId);
+            statement.setDate(2, java.sql.Date.valueOf(AppClock.today()));
+            statement.setInt(3, currentScheduleId);
+            statement.executeUpdate();
+        }
+    }
+
+    private AttendanceSession loadOrCreateScheduleSession(Connection connection, ScheduleRow schedule) throws SQLException {
+        // First check if a session already exists for this schedule today
+        try (PreparedStatement statement = connection.prepareStatement(SELECT_OPEN_SCHEDULE_SESSION_SQL)) {
+            statement.setInt(1, schedule.teacherId);
             statement.setInt(2, schedule.scheduleId);
-            statement.setDate(3, java.sql.Date.valueOf(today));
+            statement.setDate(3, java.sql.Date.valueOf(AppClock.today()));
             try (ResultSet resultSet = statement.executeQuery()) {
                 if (resultSet.next()) {
-                    return mapSession(resultSet, false);
+                    return mapSession(resultSet);
                 }
             }
         }
 
-        try (PreparedStatement statement = connection.prepareStatement(INSERT_SCHEDULE_SESSION_SQL, Statement.RETURN_GENERATED_KEYS)) {
-            statement.setInt(1, schedule.scheduleId);
-            statement.setInt(2, teacherId);
-            statement.setString(3, schedule.subjectName);
-            statement.setString(4, schedule.roomName);
-            statement.setDate(5, java.sql.Date.valueOf(today));
+        // No session yet — create one inside a transaction so a failed load
+        // does not leave an orphaned open session row in the database
+        connection.setAutoCommit(false);
+        try {
+            int sessionId = insertSession(connection, schedule.teacherId, schedule.scheduleId, schedule.sectionId,
+                    schedule.subjectId, schedule.roomId, false, "");
+            AttendanceSession session = loadSessionById(connection, sessionId);
+            connection.commit();
+            return session;
+        } catch (SQLException ex) {
+            connection.rollback();
+            throw ex;
+        } finally {
+            connection.setAutoCommit(true);
+        }
+    }
+
+    private int insertSession(Connection connection, int teacherId, Integer scheduleId, int sectionId, int subjectId,
+            Integer roomId, boolean temporary, String reason) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(INSERT_SESSION_SQL, PreparedStatement.RETURN_GENERATED_KEYS)) {
+            statement.setInt(1, teacherId);
+            if (scheduleId == null) {
+                statement.setNull(2, java.sql.Types.INTEGER);
+            } else {
+                statement.setInt(2, scheduleId);
+            }
+            statement.setInt(3, sectionId);
+            statement.setInt(4, subjectId);
+            if (roomId == null) {
+                statement.setNull(5, java.sql.Types.INTEGER);
+            } else {
+                statement.setInt(5, roomId);
+            }
+            statement.setDate(6, java.sql.Date.valueOf(AppClock.today()));
+            statement.setBoolean(7, temporary);
+            statement.setString(8, safe(reason));
             statement.executeUpdate();
             try (ResultSet keys = statement.getGeneratedKeys()) {
                 if (!keys.next()) {
-                    throw new SQLException("Attendance session insert did not return a generated key.");
+                    throw new SQLException("Session key was not returned.");
                 }
-                int sessionId = keys.getInt(1);
-                return new AttendanceSession(sessionId, teacherId, schedule.subjectName, SessionState.ACTIVE,
-                        LocalDateTime.now(), schedule.roomName, "Session #" + sessionId + " - schedule window", false);
+                return keys.getInt(1);
             }
         }
     }
 
-    private void closeExpiredScheduleSessions(Connection connection, int teacherId) throws SQLException {
-        LocalDate today = LocalDate.now();
-        LocalTime now = LocalTime.now().withNano(0);
-        try (PreparedStatement statement = connection.prepareStatement(CLOSE_EXPIRED_SCHEDULE_SESSIONS_SQL)) {
-            statement.setInt(1, teacherId);
-            statement.setDate(2, java.sql.Date.valueOf(today));
-            statement.setInt(3, teacherId);
-            statement.setInt(4, today.getDayOfWeek().getValue());
-            statement.setTime(5, java.sql.Time.valueOf(now));
-            statement.setTime(6, java.sql.Time.valueOf(now));
-            statement.executeUpdate();
-        }
-    }
-
-    private LiveSessionContext resolveLiveSession(Connection connection, int teacherId) throws SQLException {
-        AttendanceSession overrideSession = loadOverrideSession(connection, teacherId);
-        if (overrideSession != null) {
-            return new LiveSessionContext(overrideSession, null);
-        }
-        ScheduleWindowRow activeSchedule = loadActiveSchedule(connection, teacherId, LocalDate.now(), LocalTime.now().withNano(0));
-        if (activeSchedule == null) {
-            closeExpiredScheduleSessions(connection, teacherId);
-            return null;
-        }
-        return new LiveSessionContext(ensureScheduleSession(connection, teacherId, activeSchedule), activeSchedule);
-    }
-
-    private long insertOverrideSession(Connection connection, int teacherId, String subjectName, String reason) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(INSERT_OVERRIDE_SESSION_SQL, Statement.RETURN_GENERATED_KEYS)) {
-            statement.setInt(1, teacherId);
-            statement.setString(2, subjectName);
-            statement.setDate(3, java.sql.Date.valueOf(LocalDate.now()));
-            statement.setString(4, reason);
-            statement.executeUpdate();
-            try (ResultSet keys = statement.getGeneratedKeys()) {
-                if (!keys.next()) {
-                    throw new SQLException("Override session insert did not return a generated key.");
+    private AttendanceSession loadSessionById(Connection connection, int sessionId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT
+                    s.session_id,
+                    s.teacher_user_id,
+                    s.section_id,
+                    sec.section_name,
+                    s.subject_id,
+                    sub.subject_name,
+                    COALESCE(r.room_name, '') AS room_name,
+                    s.session_date,
+                    s.opened_at,
+                    s.is_temporary,
+                    COALESCE(s.reason, '') AS reason,
+                    s.status
+                FROM attendance_sessions s
+                INNER JOIN sections sec ON sec.section_id = s.section_id
+                INNER JOIN subjects sub ON sub.subject_id = s.subject_id
+                LEFT JOIN rooms r ON r.room_id = s.room_id
+                WHERE s.session_id = ?
+                LIMIT 1
+                """)) {
+            statement.setInt(1, sessionId);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (!resultSet.next()) {
+                    throw new SQLException("Session not found.");
                 }
-                return keys.getLong(1);
+                return mapSession(resultSet);
             }
         }
     }
 
-    private StudentScanRow loadStudentForQr(Connection connection, int teacherId, String qrPayload) throws SQLException {
-        String normalizedCode = normalizeStudentCode(qrPayload);
-        String normalizedEmail = qrPayload.toLowerCase(Locale.ENGLISH);
-        String normalizedPayloadHash = SecurityUtil.sha256Hex(normalize(qrPayload));
+    private StudentRow loadStudentForQr(Connection connection, int sectionId, String qrValue) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement(SELECT_STUDENT_FOR_QR_SQL)) {
-            statement.setInt(1, teacherId);
-            statement.setString(2, normalizedCode);
-            statement.setString(3, normalizedEmail);
-            statement.setString(4, normalizedPayloadHash);
+            statement.setInt(1, sectionId);
+            statement.setString(2, SecurityUtil.sha256Hex(qrValue));
+            statement.setString(3, qrValue.trim().toUpperCase());
+            statement.setString(4, qrValue.trim().toLowerCase());
             try (ResultSet resultSet = statement.executeQuery()) {
                 if (!resultSet.next()) {
                     return null;
                 }
-                Long qrId = resultSet.getObject("qr_id") == null ? null : resultSet.getLong("qr_id");
-                return new StudentScanRow(
-                        resultSet.getLong("student_pk"),
+                return new StudentRow(
+                        resultSet.getInt("student_id"),
                         resultSet.getString("student_code"),
                         resultSet.getString("full_name"),
-                        resultSet.getString("email"),
-                        qrId
+                        resultSet.getString("section_name")
                 );
             }
         }
     }
 
-    private StudentManualRow loadStudentForManual(Connection connection, int teacherId, String studentCode) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(SELECT_STUDENT_FOR_MANUAL_SQL)) {
-            statement.setInt(1, teacherId);
-            statement.setString(2, studentCode);
+    private StudentRow loadStudentInSection(Connection connection, int studentId, int sectionId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(SELECT_STUDENT_IN_SECTION_SQL)) {
+            statement.setInt(1, studentId);
+            statement.setInt(2, sectionId);
             try (ResultSet resultSet = statement.executeQuery()) {
                 if (!resultSet.next()) {
                     return null;
                 }
-                return new StudentManualRow(
-                        resultSet.getLong("student_pk"),
+                return new StudentRow(
+                        resultSet.getInt("student_id"),
                         resultSet.getString("student_code"),
-                        resultSet.getString("full_name")
+                        resultSet.getString("full_name"),
+                        resultSet.getString("section_name")
                 );
             }
         }
     }
 
-    private boolean isDuplicateAttendance(Connection connection, int sessionId, String studentCode) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(SELECT_DUPLICATE_SQL)) {
+    private boolean hasAttendance(Connection connection, int sessionId, int studentId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(CHECK_DUPLICATE_SQL)) {
             statement.setInt(1, sessionId);
-            statement.setString(2, normalizeStudentCode(studentCode));
+            statement.setInt(2, studentId);
             try (ResultSet resultSet = statement.executeQuery()) {
                 return resultSet.next();
             }
         }
     }
 
-    private long insertAttendanceRecord(Connection connection, int sessionId, long studentPk, int teacherId,
-            String subjectName, AttendanceSource source, AttendanceStatus status, String note) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(INSERT_ATTENDANCE_SQL, Statement.RETURN_GENERATED_KEYS)) {
+    private AttendanceRecord insertAttendance(Connection connection, int sessionId, String subjectName, int studentId,
+            String studentCode, String studentName, String sectionName, AttendanceMethod method,
+            AttendanceStatus status, String note) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(INSERT_RECORD_SQL, PreparedStatement.RETURN_GENERATED_KEYS)) {
             statement.setInt(1, sessionId);
-            statement.setLong(2, studentPk);
-            statement.setInt(3, teacherId);
-            statement.setString(4, subjectName);
-            statement.setString(5, source.name());
-            statement.setString(6, status.name());
-            statement.setString(7, note);
+            statement.setInt(2, studentId);
+            statement.setString(3, method.name());
+            statement.setString(4, status.name());
+            statement.setString(5, safe(note));
             statement.executeUpdate();
             try (ResultSet keys = statement.getGeneratedKeys()) {
                 if (!keys.next()) {
-                    throw new SQLException("Attendance insert did not return a generated key.");
+                    throw new SQLException("Attendance key was not returned.");
                 }
-                return keys.getLong(1);
+                return new AttendanceRecord(
+                        keys.getInt(1),
+                        studentCode,
+                        studentName,
+                        sectionName,
+                        subjectName,
+                        AppClock.nowDateTime(),
+                        method,
+                        status,
+                        safe(note)
+                );
             }
         }
     }
 
-    private void insertScanLog(Connection connection, Integer sessionId, Long studentPk, String tokenHash,
-            String scanResult, String rejectionReason) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(INSERT_SCAN_LOG_SQL)) {
-            if (sessionId == null || sessionId <= 0) {
-                statement.setNull(1, java.sql.Types.BIGINT);
-            } else {
-                statement.setInt(1, sessionId);
-            }
-            if (studentPk == null) {
-                statement.setNull(2, java.sql.Types.BIGINT);
-            } else {
-                statement.setLong(2, studentPk);
-            }
-            if (tokenHash == null || tokenHash.isBlank()) {
-                statement.setNull(3, java.sql.Types.VARCHAR);
-            } else {
-                statement.setString(3, tokenHash);
-            }
-            statement.setString(4, "QR scan received.");
-            statement.setString(5, scanResult);
-            if (rejectionReason == null || rejectionReason.isBlank()) {
-                statement.setNull(6, java.sql.Types.VARCHAR);
-            } else {
-                statement.setString(6, rejectionReason);
-            }
-            statement.executeUpdate();
-        }
-    }
-
-    private void updateQrLastUsed(Connection connection, long qrId) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(UPDATE_QR_LAST_USED_SQL)) {
-            statement.setLong(1, qrId);
-            statement.executeUpdate();
-        }
-    }
-
-    private void insertAuditLog(Connection connection, int actorUserId, String actionType, String entityType,
-            String entityId, String oldValuesJson, String newValuesJson, String notes) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(INSERT_AUDIT_LOG_SQL)) {
-            statement.setInt(1, actorUserId);
-            statement.setString(2, actionType);
-            statement.setString(3, entityType);
-            statement.setString(4, entityId);
-            statement.setString(5, oldValuesJson);
-            statement.setString(6, newValuesJson);
-            statement.setString(7, notes);
-            statement.executeUpdate();
-        }
-    }
-
-    private AttendanceStatus deriveAttendanceStatus(LiveSessionContext session) {
-        if (session.schedule == null || session.session.isOverrideSession()) {
-            return AttendanceStatus.PRESENT;
-        }
-        LocalTime lateCutoff = session.schedule.startTime.plusMinutes(15);
-        return LocalTime.now().isAfter(lateCutoff) ? AttendanceStatus.LATE : AttendanceStatus.PRESENT;
-    }
-
-    private AttendanceRecord mapAttendanceRecord(ResultSet resultSet) throws SQLException {
-        return new AttendanceRecord(
-                resultSet.getInt("attendance_id"),
-                resultSet.getString("student_code"),
-                resultSet.getInt("teacher_user_id"),
-                resultSet.getString("full_name"),
-                resultSet.getString("subject_name"),
-                resultSet.getTimestamp("recorded_at").toLocalDateTime(),
-                mapSource(resultSet.getString("attendance_source")),
-                mapStatus(resultSet.getString("attendance_status")),
-                resultSet.getString("note")
-        );
-    }
-
-    private AttendanceSession mapSession(ResultSet resultSet, boolean overrideSession) throws SQLException {
-        SessionState state = mapSessionState(resultSet.getString("session_state"));
-        String note = overrideSession ? safe(resultSet.getString("override_reason")) : "Session #" + resultSet.getInt("session_id") + " - schedule window";
+    private AttendanceSession mapSession(ResultSet resultSet) throws SQLException {
+        String rawStatus = resultSet.getString("status");
+        SessionStatus status = "OPEN".equalsIgnoreCase(rawStatus) ? SessionStatus.OPEN : SessionStatus.CLOSED;
         return new AttendanceSession(
                 resultSet.getInt("session_id"),
                 resultSet.getInt("teacher_user_id"),
+                resultSet.getInt("section_id"),
+                resultSet.getString("section_name"),
+                resultSet.getInt("subject_id"),
                 resultSet.getString("subject_name"),
-                state,
-                toLocalDateTime(resultSet.getTimestamp("opened_at")),
                 resultSet.getString("room_name"),
-                note,
-                overrideSession
+                resultSet.getDate("session_date").toLocalDate(),
+                resultSet.getTimestamp("opened_at").toLocalDateTime(),
+                resultSet.getBoolean("is_temporary"),
+                safe(resultSet.getString("reason")),
+                status
         );
     }
 
-    private SessionState mapSessionState(String value) {
-        try {
-            return SessionState.valueOf(value == null ? "LOCKED" : value.trim().toUpperCase(Locale.ENGLISH));
-        } catch (IllegalArgumentException ex) {
-            return SessionState.LOCKED;
+    private ppb.qrattend.model.CoreModels.EmailStatus mapEmailStatus(String raw) {
+        if (raw == null) {
+            return ppb.qrattend.model.CoreModels.EmailStatus.NOT_SENT;
         }
-    }
-
-    private AttendanceSource mapSource(String value) {
-        try {
-            return AttendanceSource.valueOf(value == null ? "QR" : value.trim().toUpperCase(Locale.ENGLISH));
-        } catch (IllegalArgumentException ex) {
-            return AttendanceSource.QR;
-        }
-    }
-
-    private AttendanceStatus mapStatus(String value) {
-        try {
-            return AttendanceStatus.valueOf(value == null ? "PRESENT" : value.trim().toUpperCase(Locale.ENGLISH));
-        } catch (IllegalArgumentException ex) {
-            return AttendanceStatus.PRESENT;
-        }
-    }
-
-    private DayOfWeek dayOfWeek(int value) {
-        int safeValue = Math.max(1, Math.min(7, value));
-        return DayOfWeek.of(safeValue);
-    }
-
-    private LocalDateTime toLocalDateTime(Timestamp timestamp) {
-        return timestamp == null ? LocalDateTime.now() : timestamp.toLocalDateTime();
-    }
-
-    private String normalize(String value) {
-        return value == null ? "" : value.trim();
-    }
-
-    private String normalizeStudentCode(String value) {
-        return value == null ? "" : value.trim().toUpperCase(Locale.ENGLISH);
+        return switch (raw.trim().toUpperCase()) {
+            case "SENT" -> ppb.qrattend.model.CoreModels.EmailStatus.SENT;
+            case "FAILED" -> ppb.qrattend.model.CoreModels.EmailStatus.FAILED;
+            default -> ppb.qrattend.model.CoreModels.EmailStatus.NOT_SENT;
+        };
     }
 
     private String safe(String value) {
         return value == null ? "" : value.trim();
     }
 
-    private String buildSessionJson(String subjectName, String state, String room, String note) {
-        return "{"
-                + "\"subject_name\":\"" + escapeJson(subjectName) + "\","
-                + "\"state\":\"" + escapeJson(state) + "\","
-                + "\"room\":\"" + escapeJson(room) + "\","
-                + "\"note\":\"" + escapeJson(note) + "\""
-                + "}";
+    private record ScheduleRow(int scheduleId, int teacherId, int sectionId, String sectionName,
+            int subjectId, String subjectName, int roomId, String roomName) {
     }
 
-    private String buildAttendanceJson(String studentCode, String subjectName, AttendanceSource source, AttendanceStatus status, String note) {
-        return "{"
-                + "\"student_code\":\"" + escapeJson(studentCode) + "\","
-                + "\"subject_name\":\"" + escapeJson(subjectName) + "\","
-                + "\"source\":\"" + source.name() + "\","
-                + "\"status\":\"" + status.name() + "\","
-                + "\"note\":\"" + escapeJson(note) + "\""
-                + "}";
-    }
-
-    private String escapeJson(String value) {
-        StringBuilder builder = new StringBuilder(value.length() + 24);
-        for (int i = 0; i < value.length(); i++) {
-            char ch = value.charAt(i);
-            switch (ch) {
-                case '"' -> builder.append("\\\"");
-                case '\\' -> builder.append("\\\\");
-                case '\b' -> builder.append("\\b");
-                case '\f' -> builder.append("\\f");
-                case '\n' -> builder.append("\\n");
-                case '\r' -> builder.append("\\r");
-                case '\t' -> builder.append("\\t");
-                default -> {
-                    if (ch < 0x20) {
-                        builder.append(String.format("\\u%04x", (int) ch));
-                    } else {
-                        builder.append(ch);
-                    }
-                }
-            }
-        }
-        return builder.toString();
-    }
-
-    private void rollbackQuietly(Connection connection) {
-        try {
-            connection.rollback();
-        } catch (SQLException ex) {
-            // Ignore rollback exceptions because the original failure is already being handled.
-        }
-    }
-
-    private void restoreAutoCommit(Connection connection) {
-        try {
-            connection.setAutoCommit(true);
-        } catch (SQLException ex) {
-            // Ignore auto-commit restore failures; the connection closes right after this.
-        }
-    }
-
-    private static final class TeacherRow {
-
-        private final int userId;
-        private final String fullName;
-        private final String accountStatus;
-
-        private TeacherRow(int userId, String fullName, String accountStatus) {
-            this.userId = userId;
-            this.fullName = fullName;
-            this.accountStatus = accountStatus;
-        }
-    }
-
-    private static final class ScheduleWindowRow {
-
-        private final int scheduleId;
-        private final int teacherId;
-        private final String subjectName;
-        private final DayOfWeek day;
-        private final LocalTime startTime;
-        private final LocalTime endTime;
-        private final String roomName;
-
-        private ScheduleWindowRow(int scheduleId, int teacherId, String subjectName, DayOfWeek day,
-                LocalTime startTime, LocalTime endTime, String roomName) {
-            this.scheduleId = scheduleId;
-            this.teacherId = teacherId;
-            this.subjectName = subjectName;
-            this.day = day;
-            this.startTime = startTime;
-            this.endTime = endTime;
-            this.roomName = roomName;
-        }
-    }
-
-    private static final class LiveSessionContext {
-
-        private final AttendanceSession session;
-        private final ScheduleWindowRow schedule;
-
-        private LiveSessionContext(AttendanceSession session, ScheduleWindowRow schedule) {
-            this.session = session;
-            this.schedule = schedule;
-        }
-    }
-
-    private static final class StudentScanRow {
-
-        private final long studentPk;
-        private final String studentCode;
-        private final String fullName;
-        private final String email;
-        private final Long qrId;
-
-        private StudentScanRow(long studentPk, String studentCode, String fullName, String email, Long qrId) {
-            this.studentPk = studentPk;
-            this.studentCode = studentCode;
-            this.fullName = fullName;
-            this.email = email;
-            this.qrId = qrId;
-        }
-    }
-
-    private static final class StudentManualRow {
-
-        private final long studentPk;
-        private final String studentCode;
-        private final String fullName;
-
-        private StudentManualRow(long studentPk, String studentCode, String fullName) {
-            this.studentPk = studentPk;
-            this.studentCode = studentCode;
-            this.fullName = fullName;
-        }
+    private record StudentRow(int studentId, String studentCode, String fullName, String sectionName) {
     }
 }

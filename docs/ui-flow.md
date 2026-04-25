@@ -1,119 +1,136 @@
 # UI Flow
 
-This document explains what the user sees in the app and what file builds each screen.
+This version is built to feel simple.
 
-## 1. Login flow
+The user should not need to remember school data or type the same details again and again.
 
-```mermaid
-flowchart TD
-    A["Open app"] --> B["Sign in screen"]
-    B --> C{"Admin or Teacher?"}
-    C -->|Admin| D["Admin sign in"]
-    C -->|Teacher| E["Teacher sign in"]
-    D --> F["DatabaseAuthenticationService"]
-    E --> F
-    F -->|Success| G["AppShell"]
-    F -->|Fail| H["Show sign in message"]
-```
-
-Login UI files:
-
-- [`src/ppb/qrattend/component/login/PanelCover.java`](../src/ppb/qrattend/component/login/PanelCover.java)
-- [`src/ppb/qrattend/component/login/PanelLogin.java`](../src/ppb/qrattend/component/login/PanelLogin.java)
-
-## 2. Main workspace flow
-
-The app now uses a simple task-first layout:
-
-- left side: small menu
-- center: current page
-- right side: help, recent activity, or next steps
-
-Main shell file:
-
-- [`src/ppb/qrattend/app/AppShell.java`](../src/ppb/qrattend/app/AppShell.java)
-
-## 3. Admin flow
-
-Admin home is the main starting point.
-
-Admin usually follows this order:
-
-1. add a teacher
-2. add students
-3. set class schedules
-4. review requests
-5. check reports
-
-```mermaid
-flowchart LR
-    A["Admin Home"] --> B["Add Teacher"]
-    A --> C["Add Student"]
-    A --> D["Set Schedule"]
-    A --> E["Requests"]
-    A --> F["Reports"]
-```
-
-Admin screen files:
-
-- [`src/ppb/qrattend/app/AdminDashboardScreen.java`](../src/ppb/qrattend/app/AdminDashboardScreen.java)
-- [`src/ppb/qrattend/app/TeachersScreen.java`](../src/ppb/qrattend/app/TeachersScreen.java)
-- [`src/ppb/qrattend/app/AdminStudentsScreen.java`](../src/ppb/qrattend/app/AdminStudentsScreen.java)
-- [`src/ppb/qrattend/app/AdminSchedulesScreen.java`](../src/ppb/qrattend/app/AdminSchedulesScreen.java)
-- [`src/ppb/qrattend/app/RequestsScreen.java`](../src/ppb/qrattend/app/RequestsScreen.java)
-- [`src/ppb/qrattend/app/ReportsScreen.java`](../src/ppb/qrattend/app/ReportsScreen.java)
-
-## 4. Teacher flow
-
-Teacher home is also the main starting point.
-
-Teacher usually follows this order:
-
-1. start attendance
-2. scan student QR codes
-3. use help only if QR fails
-4. check class list or schedule if needed
-5. read reports and ask AI if something looks wrong
-
-```mermaid
-flowchart LR
-    A["Teacher Home"] --> B["Start Attendance"]
-    A --> C["Class List"]
-    A --> D["Schedule Help"]
-    A --> E["Reports"]
-```
-
-Teacher screen files:
-
-- [`src/ppb/qrattend/app/TeacherDashboardScreen.java`](../src/ppb/qrattend/app/TeacherDashboardScreen.java)
-- [`src/ppb/qrattend/app/AttendanceScreen.java`](../src/ppb/qrattend/app/AttendanceScreen.java)
-- [`src/ppb/qrattend/app/TeacherRosterScreen.java`](../src/ppb/qrattend/app/TeacherRosterScreen.java)
-- [`src/ppb/qrattend/app/TeacherScheduleScreen.java`](../src/ppb/qrattend/app/TeacherScheduleScreen.java)
-- [`src/ppb/qrattend/app/ReportsScreen.java`](../src/ppb/qrattend/app/ReportsScreen.java)
-
-## 5. Attendance page flow
-
-The attendance page was simplified into three steps:
+## Admin Flow
 
 ```mermaid
 flowchart TD
-    A["Open Attendance"] --> B["Step 1: Start class"]
-    B --> C["Step 2: Scan student QR"]
-    C --> D{"Scan worked?"}
-    D -->|Yes| E["Save attendance"]
-    D -->|No| F["Step 3: Need help?"]
-    F --> G["Mark Without QR"]
+    A["Login"] --> B["Admin Home"]
+    B --> C["Teachers"]
+    B --> D["School Lists"]
+    B --> E["Students"]
+    B --> F["Schedule"]
+    B --> G["Requests"]
+    B --> H["Reports"]
 ```
 
-Important note:
+### Admin Home
 
-- the teacher should mainly use the scan section
-- the help section is only for backup/manual attendance
+Big next-step actions:
 
-## 6. Shared UI helper files
+- Add Teacher
+- Add Students
+- Set Schedule
+- Review Requests
+- View Reports
 
-- [`src/ppb/qrattend/app/AppTheme.java`](../src/ppb/qrattend/app/AppTheme.java)
-  - colors, buttons, tables, borders, fonts
-- [`src/ppb/qrattend/app/AppFlowPanels.java`](../src/ppb/qrattend/app/AppFlowPanels.java)
-  - simple action tiles
-  - simple helper panels
+### Teachers
+
+- type teacher name
+- type teacher email
+- click add
+- resend/reset password when needed
+
+### School Lists
+
+Admin saves:
+
+- sections
+- subjects
+- rooms
+
+These lists are reused everywhere else.
+
+### Students
+
+- choose section first
+- import students by pasted rows
+- or add one student manually
+- resend QR from the list
+
+### Schedule
+
+Everything is picked from dropdowns:
+
+- teacher
+- section
+- subject
+- room
+- day
+- time
+
+### Requests
+
+Two clear groups:
+
+- schedule requests
+- student removal requests
+
+### Reports
+
+- choose filters
+- read summary first
+- check records below
+
+## Teacher Flow
+
+```mermaid
+flowchart TD
+    A["Login"] --> B["Teacher Home"]
+    B --> C["Attendance"]
+    B --> D["My Class List"]
+    B --> E["My Schedule"]
+    B --> F["Reports"]
+```
+
+### Teacher Home
+
+Big next-step actions:
+
+- Start Attendance
+- My Class List
+- Ask for Schedule Change
+- Reports
+
+### Attendance
+
+```mermaid
+flowchart TD
+    A["Open Attendance Page"] --> B{"Scheduled class now?"}
+    B -- Yes --> C["Class opens automatically"]
+    B -- No --> D["Teacher may start temporary class"]
+    C --> E["Scan student QR"]
+    D --> E
+    E --> F{"QR failed?"}
+    F -- No --> G["Attendance saved"]
+    F -- Yes --> H["Click student button"]
+    H --> G
+```
+
+Important UI rules:
+
+- one main attendance path
+- no student ID typing for backup attendance
+- only current class students appear in the manual list
+- auto refresh checks the class again while the page is open
+
+### My Class List
+
+- shows students from sections in the teacher schedule
+- teacher can only ask admin to remove a student
+
+### My Schedule
+
+- shows saved schedule
+- teacher picks a class
+- teacher chooses new values from saved dropdowns
+- teacher sends request to admin
+
+### Reports
+
+- read summary
+- read records
+- ask AI questions about the current report

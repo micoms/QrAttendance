@@ -4,740 +4,665 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.sql.Statement;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
+import java.util.Set;
 import ppb.qrattend.db.DatabaseManager;
 import ppb.qrattend.db.SecurityUtil;
 import ppb.qrattend.email.ResendEmailClient;
-import ppb.qrattend.model.AppDomain.EmailStatus;
-import ppb.qrattend.model.AppDomain.ScheduleRequestStatus;
-import ppb.qrattend.model.AppDomain.StudentProfile;
-import ppb.qrattend.model.AppDomain.StudentRemovalRequest;
+import ppb.qrattend.email.ResendEmailClient.EmailSendResult;
+import ppb.qrattend.model.CoreModels.EmailStatus;
+import ppb.qrattend.model.CoreModels.RequestStatus;
+import ppb.qrattend.model.CoreModels.Student;
+import ppb.qrattend.model.CoreModels.StudentRemovalRequest;
 
 public final class StudentService {
 
-    private static final String SELECT_STUDENTS_FOR_TEACHER_SQL = """
+    private static final String SELECT_ALL_SQL = """
             SELECT
-                sp.student_pk,
-                sp.student_code,
-                sp.section_name,
-                sp.full_name,
-                sp.email,
-                sp.qr_status,
-                sp.created_at
-            FROM teacher_student_assignments tsa
-            INNER JOIN student_profiles sp
-                ON sp.student_pk = tsa.student_pk
-            INNER JOIN users u
-                ON u.user_id = tsa.teacher_user_id
-            WHERE tsa.teacher_user_id = ?
-              AND tsa.assignment_status = 'ACTIVE'
-              AND sp.account_status = 'ACTIVE'
-              AND u.role = 'TEACHER'
-            ORDER BY sp.section_name ASC, sp.full_name ASC
+                s.student_id,
+                s.student_code,
+                s.full_name,
+                s.email,
+                s.section_id,
+                sec.section_name,
+                s.is_active,
+                s.qr_status
+            FROM students s
+            INNER JOIN sections sec
+                ON sec.section_id = s.section_id
+            ORDER BY sec.section_name ASC, s.full_name ASC
             """;
 
-    private static final String SELECT_ALL_STUDENTS_SQL = """
+    private static final String SELECT_BY_SECTION_SQL = """
             SELECT
-                sp.student_pk,
-                sp.student_code,
-                sp.section_name,
-                sp.full_name,
-                sp.email,
-                sp.qr_status,
-                sp.created_at,
-                tsa.teacher_user_id
-            FROM student_profiles sp
-            LEFT JOIN teacher_student_assignments tsa
-                ON tsa.student_pk = sp.student_pk
-               AND tsa.assignment_status = 'ACTIVE'
-            WHERE sp.account_status = 'ACTIVE'
-            ORDER BY sp.section_name ASC, sp.full_name ASC
+                s.student_id,
+                s.student_code,
+                s.full_name,
+                s.email,
+                s.section_id,
+                sec.section_name,
+                s.is_active,
+                s.qr_status
+            FROM students s
+            INNER JOIN sections sec
+                ON sec.section_id = s.section_id
+            WHERE s.section_id = ?
+            ORDER BY s.full_name ASC
             """;
 
-    private static final String SELECT_STUDENT_FOR_TEACHER_SQL = """
+    private static final String SELECT_FOR_TEACHER_SQL = """
+            SELECT DISTINCT
+                s.student_id,
+                s.student_code,
+                s.full_name,
+                s.email,
+                s.section_id,
+                sec.section_name,
+                s.is_active,
+                s.qr_status
+            FROM schedules sc
+            INNER JOIN students s
+                ON s.section_id = sc.section_id
+            INNER JOIN sections sec
+                ON sec.section_id = s.section_id
+            WHERE sc.teacher_user_id = ?
+              AND sc.is_active = 1
+              AND s.is_active = 1
+            ORDER BY sec.section_name ASC, s.full_name ASC
+            """;
+
+    private static final String SELECT_ONE_SQL = """
             SELECT
-                sp.student_pk,
-                sp.student_code,
-                sp.section_name,
-                sp.full_name,
-                sp.email,
-                sp.qr_status,
-                sp.created_at
-            FROM teacher_student_assignments tsa
-            INNER JOIN student_profiles sp
-                ON sp.student_pk = tsa.student_pk
-            INNER JOIN users u
-                ON u.user_id = tsa.teacher_user_id
-            WHERE tsa.teacher_user_id = ?
-              AND sp.student_code = ?
-              AND tsa.assignment_status = 'ACTIVE'
-              AND sp.account_status = 'ACTIVE'
-              AND u.role = 'TEACHER'
+                s.student_id,
+                s.student_code,
+                s.full_name,
+                s.email,
+                s.section_id,
+                sec.section_name,
+                s.is_active,
+                s.qr_status
+            FROM students s
+            INNER JOIN sections sec
+                ON sec.section_id = s.section_id
+            WHERE s.student_id = ?
             LIMIT 1
             """;
 
-    private static final String SELECT_ACTIVE_QR_SQL = """
+    private static final String SELECT_ONE_BY_CODE_SQL = """
             SELECT
-                sp.student_pk,
-                sp.student_code,
-                sp.section_name,
-                sp.full_name,
-                sp.email,
-                sp.qr_status,
-                sqt.qr_id
-            FROM teacher_student_assignments tsa
-            INNER JOIN student_profiles sp
-                ON sp.student_pk = tsa.student_pk
-            INNER JOIN users u
-                ON u.user_id = tsa.teacher_user_id
-            INNER JOIN student_qr_tokens sqt
-                ON sqt.student_pk = sp.student_pk
-               AND sqt.is_active = 1
-               AND sqt.token_type = 'PERMANENT'
-            WHERE tsa.teacher_user_id = ?
-              AND sp.student_code = ?
-              AND tsa.assignment_status = 'ACTIVE'
-              AND sp.account_status = 'ACTIVE'
-              AND u.role = 'TEACHER'
-            ORDER BY sqt.qr_id DESC
-            LIMIT 1
-            """;
-
-    private static final String SELECT_ACTIVE_TEACHER_SQL = """
-            SELECT user_id, full_name, email, account_status
-            FROM users
-            WHERE user_id = ?
-              AND role = 'TEACHER'
-            LIMIT 1
-            """;
-
-    private static final String SELECT_ACTIVE_ADMIN_SQL = """
-            SELECT user_id, full_name, email, account_status
-            FROM users
-            WHERE user_id = ?
-              AND role = 'ADMIN'
-            LIMIT 1
-            """;
-
-    private static final String CHECK_STUDENT_CODE_SQL = """
-            SELECT 1
-            FROM student_profiles
-            WHERE student_code = ?
-            LIMIT 1
-            """;
-
-    private static final String CHECK_STUDENT_EMAIL_SQL = """
-            SELECT 1
-            FROM student_profiles
-            WHERE email = ?
+                s.student_id,
+                s.student_code,
+                s.full_name,
+                s.email,
+                s.section_id,
+                sec.section_name,
+                s.is_active,
+                s.qr_status
+            FROM students s
+            INNER JOIN sections sec
+                ON sec.section_id = s.section_id
+            WHERE UPPER(s.student_code) = ?
             LIMIT 1
             """;
 
     private static final String INSERT_STUDENT_SQL = """
-            INSERT INTO student_profiles
-                (student_code, full_name, email, section_name, qr_status, account_status, created_by_teacher_id, managed_by_admin_id)
-            VALUES (?, ?, ?, ?, 'QUEUED', 'ACTIVE', ?, ?)
+            INSERT INTO students
+                (section_id, student_code, full_name, email, qr_hash, qr_status, is_active)
+            VALUES (?, ?, ?, ?, ?, 'NOT_SENT', 1)
             """;
 
-    private static final String INSERT_ASSIGNMENT_SQL = """
-            INSERT INTO teacher_student_assignments
-                (teacher_user_id, student_pk, assignment_status)
-            VALUES (?, ?, 'ACTIVE')
+    private static final String UPDATE_QR_SQL = """
+            UPDATE students
+            SET qr_hash = ?, qr_status = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE student_id = ?
             """;
 
-    private static final String INSERT_QR_TOKEN_SQL = """
-            INSERT INTO student_qr_tokens
-                (student_pk, token_hash, token_type, is_active)
-            VALUES (?, ?, 'PERMANENT', 1)
-            """;
-
-    private static final String DEACTIVATE_QR_TOKENS_SQL = """
-            UPDATE student_qr_tokens
-            SET is_active = 0
-            WHERE student_pk = ?
-              AND is_active = 1
-            """;
-
-    private static final String UPDATE_STUDENT_QR_STATUS_SQL = """
-            UPDATE student_profiles
-            SET qr_status = ?,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE student_pk = ?
-            """;
-
-    private static final String UPDATE_QR_EMAILED_AT_SQL = """
-            UPDATE student_qr_tokens
-            SET emailed_at = CURRENT_TIMESTAMP
-            WHERE qr_id = ?
-            """;
-
-    private static final String CHECK_PENDING_REMOVAL_REQUEST_SQL = """
-            SELECT 1
-            FROM student_roster_change_requests
-            WHERE teacher_user_id = ?
-              AND student_pk = ?
-              AND request_type = 'REMOVE_FROM_LIST'
-              AND request_status = 'PENDING'
-            LIMIT 1
+    private static final String SELECT_TEACHER_SECTIONS_SQL = """
+            SELECT DISTINCT sec.section_name
+            FROM schedules sc
+            INNER JOIN sections sec
+                ON sec.section_id = sc.section_id
+            WHERE sc.teacher_user_id = ?
+              AND sc.is_active = 1
+            ORDER BY sec.section_name ASC
             """;
 
     private static final String INSERT_REMOVAL_REQUEST_SQL = """
-            INSERT INTO student_roster_change_requests
-                (teacher_user_id, student_pk, request_type, request_status, reason)
-            VALUES (?, ?, 'REMOVE_FROM_LIST', 'PENDING', ?)
+            INSERT INTO student_removal_requests
+                (teacher_user_id, student_id, reason, status)
+            VALUES (?, ?, ?, 'PENDING')
             """;
 
-    private static final String SELECT_REMOVAL_REQUESTS_SQL = """
+    private static final String SELECT_ALL_REMOVAL_REQUESTS_SQL = """
             SELECT
-                r.removal_request_id,
+                r.request_id,
                 r.teacher_user_id,
                 t.full_name AS teacher_name,
-                sp.student_pk,
-                sp.student_code,
-                sp.full_name AS student_name,
-                sp.section_name,
+                s.student_id,
+                s.student_code,
+                s.full_name AS student_name,
+                sec.section_name,
                 r.reason,
-                r.request_status,
-                reviewer.full_name AS reviewed_by_name,
-                r.reviewed_at,
-                r.created_at
-            FROM student_roster_change_requests r
+                r.status,
+                reviewer.full_name AS reviewed_by,
+                r.created_at,
+                r.reviewed_at
+            FROM student_removal_requests r
             INNER JOIN users t
                 ON t.user_id = r.teacher_user_id
-            INNER JOIN student_profiles sp
-                ON sp.student_pk = r.student_pk
+            INNER JOIN students s
+                ON s.student_id = r.student_id
+            INNER JOIN sections sec
+                ON sec.section_id = s.section_id
             LEFT JOIN users reviewer
                 ON reviewer.user_id = r.reviewed_by_user_id
             ORDER BY
-                CASE r.request_status
+                CASE r.status
                     WHEN 'PENDING' THEN 0
                     WHEN 'APPROVED' THEN 1
                     ELSE 2
                 END,
-                r.created_at DESC,
-                r.removal_request_id DESC
+                r.request_id DESC
             """;
 
-    private static final String SELECT_REMOVAL_REQUESTS_FOR_TEACHER_SQL = """
+    private static final String SELECT_TEACHER_REMOVAL_REQUESTS_SQL = """
             SELECT
-                r.removal_request_id,
+                r.request_id,
                 r.teacher_user_id,
                 t.full_name AS teacher_name,
-                sp.student_pk,
-                sp.student_code,
-                sp.full_name AS student_name,
-                sp.section_name,
+                s.student_id,
+                s.student_code,
+                s.full_name AS student_name,
+                sec.section_name,
                 r.reason,
-                r.request_status,
-                reviewer.full_name AS reviewed_by_name,
-                r.reviewed_at,
-                r.created_at
-            FROM student_roster_change_requests r
+                r.status,
+                reviewer.full_name AS reviewed_by,
+                r.created_at,
+                r.reviewed_at
+            FROM student_removal_requests r
             INNER JOIN users t
                 ON t.user_id = r.teacher_user_id
-            INNER JOIN student_profiles sp
-                ON sp.student_pk = r.student_pk
+            INNER JOIN students s
+                ON s.student_id = r.student_id
+            INNER JOIN sections sec
+                ON sec.section_id = s.section_id
             LEFT JOIN users reviewer
                 ON reviewer.user_id = r.reviewed_by_user_id
             WHERE r.teacher_user_id = ?
-            ORDER BY r.created_at DESC, r.removal_request_id DESC
+            ORDER BY r.request_id DESC
             """;
 
-    private static final String SELECT_REMOVAL_REQUEST_BY_ID_SQL = """
+    private static final String SELECT_REMOVAL_REQUEST_SQL = """
             SELECT
-                r.removal_request_id,
+                r.request_id,
                 r.teacher_user_id,
                 t.full_name AS teacher_name,
-                sp.student_pk,
-                sp.student_code,
-                sp.full_name AS student_name,
-                sp.section_name,
+                s.student_id,
+                s.student_code,
+                s.full_name AS student_name,
+                sec.section_name,
                 r.reason,
-                r.request_status,
-                reviewer.full_name AS reviewed_by_name,
-                r.reviewed_at,
-                r.created_at
-            FROM student_roster_change_requests r
+                r.status,
+                reviewer.full_name AS reviewed_by,
+                r.created_at,
+                r.reviewed_at
+            FROM student_removal_requests r
             INNER JOIN users t
                 ON t.user_id = r.teacher_user_id
-            INNER JOIN student_profiles sp
-                ON sp.student_pk = r.student_pk
+            INNER JOIN students s
+                ON s.student_id = r.student_id
+            INNER JOIN sections sec
+                ON sec.section_id = s.section_id
             LEFT JOIN users reviewer
                 ON reviewer.user_id = r.reviewed_by_user_id
-            WHERE r.removal_request_id = ?
+            WHERE r.request_id = ?
             LIMIT 1
             """;
 
     private static final String UPDATE_REMOVAL_REQUEST_SQL = """
-            UPDATE student_roster_change_requests
-            SET request_status = ?,
-                reviewed_by_user_id = ?,
-                reviewed_at = CURRENT_TIMESTAMP,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE removal_request_id = ?
+            UPDATE student_removal_requests
+            SET status = ?, reviewed_by_user_id = ?, reviewed_at = CURRENT_TIMESTAMP
+            WHERE request_id = ?
             """;
 
-    private static final String DEACTIVATE_ASSIGNMENT_SQL = """
-            UPDATE teacher_student_assignments
-            SET assignment_status = 'INACTIVE'
-            WHERE teacher_user_id = ?
-              AND student_pk = ?
-              AND assignment_status = 'ACTIVE'
+    private static final String UPDATE_STUDENT_SQL = """
+            UPDATE students
+            SET section_id = ?, student_code = ?, full_name = ?, email = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE student_id = ?
+            """;
+
+    private static final String DEACTIVATE_STUDENT_SQL = """
+            UPDATE students
+            SET is_active = 0, updated_at = CURRENT_TIMESTAMP
+            WHERE student_id = ?
             """;
 
     private final DatabaseManager databaseManager;
     private final ResendEmailClient resendEmailClient;
-    private final AuditLogService auditLogService;
-    private final EmailDispatchService emailDispatchService;
+    private final EmailService emailService;
 
     public StudentService() {
-        this(DatabaseManager.fromDefaultConfig(), ResendEmailClient.createDefault());
+        this(DatabaseManager.fromDefaultConfig(), ResendEmailClient.createDefault(), new EmailService());
     }
 
-    public StudentService(DatabaseManager databaseManager, ResendEmailClient resendEmailClient) {
-        this(databaseManager, resendEmailClient, new AuditLogService(databaseManager), new EmailDispatchService(databaseManager));
-    }
-
-    public StudentService(DatabaseManager databaseManager, ResendEmailClient resendEmailClient,
-            AuditLogService auditLogService, EmailDispatchService emailDispatchService) {
+    public StudentService(DatabaseManager databaseManager, ResendEmailClient resendEmailClient, EmailService emailService) {
         this.databaseManager = databaseManager;
         this.resendEmailClient = resendEmailClient;
-        this.auditLogService = auditLogService;
-        this.emailDispatchService = emailDispatchService;
+        this.emailService = emailService;
     }
 
-    public boolean isReady() {
-        return databaseManager.isReady();
+    public ServiceResult<List<Student>> getAllStudents() {
+        return loadStudents(SELECT_ALL_SQL, null);
     }
 
-    public ServiceResult<List<StudentProfile>> getStudentsForTeacher(int teacherId) {
-        if (teacherId <= 0) {
-            return ServiceResult.failure("Teacher account is required.");
+    public ServiceResult<List<Student>> getStudentsBySection(int sectionId) {
+        return loadStudents(SELECT_BY_SECTION_SQL, sectionId);
+    }
+
+    public ServiceResult<List<Student>> getStudentsForTeacher(int teacherId) {
+        return loadStudents(SELECT_FOR_TEACHER_SQL, teacherId);
+    }
+
+    public ServiceResult<Student> findStudent(int studentId) {
+        return loadOneStudent(SELECT_ONE_SQL, studentId);
+    }
+
+    public ServiceResult<Student> findStudentByCode(String studentCode) {
+        String cleanCode = normalizeCode(studentCode);
+        if (cleanCode.isBlank()) {
+            return ServiceResult.failure("Student not found.");
         }
         if (!databaseManager.isReady()) {
             return ServiceResult.failure(databaseManager.getStatusMessage());
         }
-
-        List<StudentProfile> students = new ArrayList<>();
         try (Connection connection = databaseManager.openConnection();
-                PreparedStatement statement = connection.prepareStatement(SELECT_STUDENTS_FOR_TEACHER_SQL)) {
-            statement.setInt(1, teacherId);
-            try (ResultSet resultSet = statement.executeQuery()) {
-                while (resultSet.next()) {
-                    students.add(mapStudentProfile(resultSet, teacherId));
-                }
-            }
-            return ServiceResult.success("Loaded the teacher roster from MariaDB.", students);
-        } catch (SQLException ex) {
-            return ServiceResult.failure("Could not load students: " + ex.getMessage());
-        }
-    }
-
-    public ServiceResult<List<StudentProfile>> getAllStudents() {
-        if (!databaseManager.isReady()) {
-            return ServiceResult.failure(databaseManager.getStatusMessage());
-        }
-
-        List<StudentProfile> students = new ArrayList<>();
-        try (Connection connection = databaseManager.openConnection();
-                PreparedStatement statement = connection.prepareStatement(SELECT_ALL_STUDENTS_SQL);
-                ResultSet resultSet = statement.executeQuery()) {
-            while (resultSet.next()) {
-                students.add(mapStudentProfile(resultSet, resultSet.getInt("teacher_user_id")));
-            }
-            return ServiceResult.success("Loaded all active students from MariaDB.", students);
-        } catch (SQLException ex) {
-            return ServiceResult.failure("Could not load all students: " + ex.getMessage());
-        }
-    }
-
-    public ServiceResult<StudentProfile> findStudentForTeacher(int teacherId, String studentCode) {
-        String normalizedStudentCode = normalizeStudentCode(studentCode);
-        if (teacherId <= 0) {
-            return ServiceResult.failure("Teacher account is required.");
-        }
-        if (normalizedStudentCode.isBlank()) {
-            return ServiceResult.failure("Student ID is required.");
-        }
-        if (!databaseManager.isReady()) {
-            return ServiceResult.failure(databaseManager.getStatusMessage());
-        }
-
-        try (Connection connection = databaseManager.openConnection();
-                PreparedStatement statement = connection.prepareStatement(SELECT_STUDENT_FOR_TEACHER_SQL)) {
-            statement.setInt(1, teacherId);
-            statement.setString(2, normalizedStudentCode);
+                PreparedStatement statement = connection.prepareStatement(SELECT_ONE_BY_CODE_SQL)) {
+            statement.setString(1, cleanCode);
             try (ResultSet resultSet = statement.executeQuery()) {
                 if (!resultSet.next()) {
-                    return ServiceResult.failure("Student not found for this teacher.");
+                    return ServiceResult.failure("Student not found.");
                 }
-                return ServiceResult.success("Loaded student from MariaDB.", mapStudentProfile(resultSet, teacherId));
+                return ServiceResult.success("Student loaded.", mapStudent(resultSet));
             }
         } catch (SQLException ex) {
-            return ServiceResult.failure("Could not load student: " + ex.getMessage());
+            return ServiceResult.failure("Could not load the student.");
         }
     }
 
-    public ServiceResult<StudentProfile> createStudentProfile(int teacherId, String studentCode, String fullName, String email) {
-        return ServiceResult.failure("Student accounts are now managed by admin by section.");
-    }
-
-    public ServiceResult<StudentProfile> createStudentProfileByAdmin(int actorUserId, int teacherId, String sectionName,
-            String studentCode, String fullName, String email) {
-        ServiceResult<StudentCreateDraft> draftResult = prepareStudentCreateDraft(
-                actorUserId, teacherId, sectionName, studentCode, fullName, email);
-        if (!draftResult.isSuccess() || draftResult.getData() == null) {
-            return ServiceResult.failure(draftResult.getMessage());
+    public ServiceResult<Student> addStudent(int sectionId, String studentCode, String fullName, String email) {
+        String cleanCode = normalizeCode(studentCode);
+        String cleanName = safe(fullName);
+        String cleanEmail = normalizeEmail(email);
+        if (sectionId <= 0) {
+            return ServiceResult.failure("Choose the section first.");
         }
-
-        StudentCreateDraft draft = draftResult.getData();
-        ServiceResult<StudentCreateResult> saveResult = saveStudentProfileByAdmin(draft);
-        if (!saveResult.isSuccess() || saveResult.getData() == null) {
-            return ServiceResult.failure(saveResult.getMessage());
+        if (cleanCode.isBlank() || cleanName.isBlank() || cleanEmail.isBlank()) {
+            return ServiceResult.failure("Complete the student ID, name, and email.");
         }
-
-        return sendStudentQrEmail(saveResult.getData(), draft.qrToken, false,
-                "Student added to " + draft.sectionName + " and QR email sent.",
-                "Student was added, but the QR email could not be sent yet.");
-    }
-
-    public ServiceResult<Void> resendStudentQr(int teacherId, String studentCode) {
-        ServiceResult<StudentQrRefreshResult> refreshResult = saveStudentQrRefresh(teacherId, studentCode);
-        if (!refreshResult.isSuccess() || refreshResult.getData() == null) {
-            return ServiceResult.failure(refreshResult.getMessage());
-        }
-
-        StudentQrRefreshResult refresh = refreshResult.getData();
-        ResendEmailClient.EmailSendResult emailResult = resendEmailClient.sendStudentQrEmail(
-                refresh.email, refresh.fullName, refresh.studentCode, refresh.qrToken, true);
-
-        if (emailResult.isSuccess()) {
-            emailDispatchService.markEmailSentQuietly(refresh.emailLogId, emailResult.getProviderMessageId());
-            updateStudentQrStatus(refresh.studentPk, EmailStatus.SENT);
-            updateQrTokenEmailedAt(refresh.qrId);
-            return ServiceResult.success("QR email re-sent to " + refresh.fullName + ".", null);
-        }
-
-        emailDispatchService.markEmailFailedQuietly(refresh.emailLogId, emailResult.getMessage());
-        updateStudentQrStatus(refresh.studentPk, EmailStatus.FAILED);
-        return ServiceResult.warning("The QR code was updated, but the email could not be sent yet.", null);
-    }
-
-    public ServiceResult<String> generatePermanentQrToken(String studentCode) {
-        String normalizedStudentCode = normalizeStudentCode(studentCode);
-        if (normalizedStudentCode.isBlank()) {
-            return ServiceResult.failure("Student ID is required.");
-        }
-        return ServiceResult.success("QR code created.", SecurityUtil.generateOpaqueToken());
-    }
-
-    private ServiceResult<StudentCreateDraft> prepareStudentCreateDraft(int actorUserId, int teacherId, String sectionName,
-            String studentCode, String fullName, String email) {
         if (!databaseManager.isReady()) {
             return ServiceResult.failure(databaseManager.getStatusMessage());
         }
 
-        String normalizedSection = normalizeSection(sectionName);
-        String normalizedStudentCode = normalizeStudentCode(studentCode);
-        String normalizedName = normalizeName(fullName);
-        String normalizedEmail = normalizeEmail(email);
+        String qrToken = SecurityUtil.generateOpaqueToken();
+        String qrHash = SecurityUtil.sha256Hex(qrToken);
+        int studentId;
 
-        if (actorUserId <= 0) {
-            return ServiceResult.failure("Admin account is required.");
-        }
-        if (teacherId <= 0) {
-            return ServiceResult.failure("Assigned teacher is required.");
-        }
-        if (normalizedSection.isBlank() || normalizedStudentCode.isBlank() || normalizedName.isBlank() || normalizedEmail.isBlank()) {
-            return ServiceResult.failure("Section, student ID, full name, and email are required.");
-        }
-        if (!looksLikeEmail(normalizedEmail)) {
-            return ServiceResult.failure("Enter a valid student email address.");
-        }
-
-        ServiceResult<String> qrTokenResult = generatePermanentQrToken(normalizedStudentCode);
-        if (!qrTokenResult.isSuccess() || qrTokenResult.getData() == null) {
-            return ServiceResult.failure(qrTokenResult.getMessage());
-        }
-
-        return ServiceResult.success("Student details are ready.",
-                new StudentCreateDraft(actorUserId, teacherId, normalizedSection, normalizedStudentCode,
-                        normalizedName, normalizedEmail, qrTokenResult.getData()));
-    }
-
-    private ServiceResult<StudentCreateResult> saveStudentProfileByAdmin(StudentCreateDraft draft) {
         try (Connection connection = databaseManager.openConnection()) {
             connection.setAutoCommit(false);
-            try {
-                ServiceResult<Void> actorCheck = validateStudentActors(connection, draft.actorUserId, draft.teacherId);
-                if (!actorCheck.isSuccess()) {
-                    rollbackQuietly(connection);
-                    return ServiceResult.failure(actorCheck.getMessage());
+            try (PreparedStatement statement = connection.prepareStatement(INSERT_STUDENT_SQL, PreparedStatement.RETURN_GENERATED_KEYS)) {
+                statement.setInt(1, sectionId);
+                statement.setString(2, cleanCode);
+                statement.setString(3, cleanName);
+                statement.setString(4, cleanEmail);
+                statement.setString(5, qrHash);
+                statement.executeUpdate();
+                try (ResultSet keys = statement.getGeneratedKeys()) {
+                    if (!keys.next()) {
+                        connection.rollback();
+                        return ServiceResult.failure("Could not save the student.");
+                    }
+                    studentId = keys.getInt(1);
                 }
-
-                if (studentCodeExists(connection, draft.studentCode)) {
-                    rollbackQuietly(connection);
-                    return ServiceResult.failure("That student ID already exists.");
-                }
-                if (studentEmailExists(connection, draft.email)) {
-                    rollbackQuietly(connection);
-                    return ServiceResult.failure("That student email is already registered.");
-                }
-
-                long studentPk = insertStudentProfile(connection, draft.teacherId, draft.actorUserId,
-                        draft.studentCode, draft.sectionName, draft.fullName, draft.email);
-                insertTeacherAssignment(connection, draft.teacherId, studentPk);
-                long qrId = insertQrToken(connection, studentPk, SecurityUtil.sha256Hex(draft.qrToken));
-
-                ServiceResult<Integer> emailLogResult = queueStudentQrEmail(connection, (int) studentPk, draft.email, false);
-                if (!emailLogResult.isSuccess() || emailLogResult.getData() == null) {
-                    rollbackQuietly(connection);
-                    return ServiceResult.failure("Could not create the student record.");
-                }
-
-                ServiceResult<Void> auditResult = auditLogService.logAction(connection, draft.actorUserId,
-                        "STUDENT_CREATE", "STUDENT", String.valueOf(studentPk),
+                int emailLogId = emailService.createQueuedEmail(
+                        connection,
+                        "STUDENT_QR",
                         null,
-                        buildStudentJson(draft.studentCode, draft.sectionName, draft.fullName, draft.email, "QUEUED", draft.teacherId),
-                        "Student profile created by admin and assigned to teacher section.");
-                if (!auditResult.isSuccess()) {
-                    rollbackQuietly(connection);
-                    return ServiceResult.failure("Could not create the student record.");
-                }
-
+                        studentId,
+                        cleanEmail,
+                        "Your school QR code is ready",
+                        "Student QR email queued."
+                );
                 connection.commit();
-                return ServiceResult.success("Student record saved.",
-                        new StudentCreateResult((int) studentPk, draft.teacherId, draft.sectionName, draft.studentCode,
-                                draft.fullName, draft.email, emailLogResult.getData(), qrId));
+
+                EmailSendResult emailResult = resendEmailClient.sendStudentQrEmail(cleanEmail, cleanName, cleanCode, qrToken, false);
+                updateStudentEmailResult(studentId, emailLogId, emailResult);
+                ServiceResult<Student> studentResult = findStudent(studentId);
+                if (emailResult.isSuccess()) {
+                    return studentResult.isSuccess()
+                            ? ServiceResult.success("Student saved and QR sent.", studentResult.getData())
+                            : ServiceResult.success("Student saved and QR sent.", null);
+                }
+                return studentResult.isSuccess()
+                        ? ServiceResult.warning("Student saved, but the QR email could not be sent.", studentResult.getData())
+                        : ServiceResult.warning("Student saved, but the QR email could not be sent.", null);
             } catch (SQLException ex) {
-                rollbackQuietly(connection);
-                return ServiceResult.failure("Could not create the student record.");
+                connection.rollback();
+                return ServiceResult.failure("Could not save the student. The ID or email may already be in use.");
             } finally {
-                restoreAutoCommit(connection);
+                connection.setAutoCommit(true);
             }
         } catch (SQLException ex) {
-            return ServiceResult.failure("Could not create the student record.");
+            return ServiceResult.failure("Could not save the student.");
         }
     }
 
-    private ServiceResult<StudentProfile> sendStudentQrEmail(StudentCreateResult created, String qrToken, boolean resend,
-            String successMessage, String warningMessage) {
-        ResendEmailClient.EmailSendResult emailResult = resendEmailClient.sendStudentQrEmail(
-                created.email, created.fullName, created.studentCode, qrToken, resend);
-
-        if (emailResult.isSuccess()) {
-            emailDispatchService.markEmailSentQuietly(created.emailLogId, emailResult.getProviderMessageId());
-            updateStudentQrStatus(created.studentPk, EmailStatus.SENT);
-            updateQrTokenEmailedAt(created.qrId);
-            StudentProfile profile = loadStudentProfileOrFallback(created.teacherId, created.studentCode,
-                    created.sectionName, created.fullName, created.email, EmailStatus.SENT);
-            return ServiceResult.success(successMessage, profile);
+    public ServiceResult<String> importStudents(int sectionId, String pastedRows) {
+        String cleanRows = safe(pastedRows);
+        if (sectionId <= 0) {
+            return ServiceResult.failure("Choose the section first.");
+        }
+        if (cleanRows.isBlank()) {
+            return ServiceResult.failure("Paste at least one student row.");
         }
 
-        emailDispatchService.markEmailFailedQuietly(created.emailLogId, emailResult.getMessage());
-        updateStudentQrStatus(created.studentPk, EmailStatus.FAILED);
-        StudentProfile profile = loadStudentProfileOrFallback(created.teacherId, created.studentCode,
-                created.sectionName, created.fullName, created.email, EmailStatus.FAILED);
-        return ServiceResult.warning(warningMessage, profile);
+        String[] lines = cleanRows.split("\\r?\\n");
+        int successCount = 0;
+        int failedCount = 0;
+        List<String> errors = new ArrayList<>();
+
+        for (String line : lines) {
+            if (safe(line).isBlank()) {
+                continue;
+            }
+            String[] parts = splitStudentLine(line);
+            if (parts.length < 3) {
+                failedCount++;
+                errors.add("Skip: " + line);
+                continue;
+            }
+            ServiceResult<Student> result = addStudent(sectionId, parts[0], parts[1], parts[2]);
+            if (result.isSuccess() || result.isWarning()) {
+                successCount++;
+            } else {
+                failedCount++;
+                errors.add(parts[0] + ": " + result.getMessage());
+            }
+        }
+
+        if (successCount == 0) {
+            return ServiceResult.failure("No students were imported.");
+        }
+
+        StringBuilder message = new StringBuilder();
+        message.append("Imported ").append(successCount).append(" student");
+        if (successCount != 1) {
+            message.append('s');
+        }
+        if (failedCount > 0) {
+            message.append(". ").append(failedCount).append(" row");
+            if (failedCount != 1) {
+                message.append('s');
+            }
+            message.append(" were skipped.");
+            return ServiceResult.warning(message.toString(), String.join(System.lineSeparator(), errors));
+        }
+        return ServiceResult.success(message.toString() + ".", "");
     }
 
-    private ServiceResult<StudentQrRefreshResult> saveStudentQrRefresh(int teacherId, String studentCode) {
-        if (!databaseManager.isReady()) {
-            return ServiceResult.failure(databaseManager.getStatusMessage());
+    public ServiceResult<Void> resendStudentQr(int studentId) {
+        ServiceResult<Student> studentResult = findStudent(studentId);
+        if (!studentResult.isSuccess() || studentResult.getData() == null) {
+            return ServiceResult.failure("Student not found.");
         }
+        Student student = studentResult.getData();
+        String qrToken = SecurityUtil.generateOpaqueToken();
+        String qrHash = SecurityUtil.sha256Hex(qrToken);
 
-        String normalizedStudentCode = normalizeStudentCode(studentCode);
-        if (teacherId <= 0) {
-            return ServiceResult.failure("Assigned teacher account is required.");
-        }
-        if (normalizedStudentCode.isBlank()) {
-            return ServiceResult.failure("Student ID is required.");
-        }
-
+        int emailLogId;
         try (Connection connection = databaseManager.openConnection()) {
             connection.setAutoCommit(false);
             try {
-                UserAccountRow teacher = loadActiveUser(connection, teacherId, "TEACHER", "Assigned teacher");
-                if (teacher == null) {
-                    rollbackQuietly(connection);
-                    return ServiceResult.failure("Assigned teacher account was not found.");
+                try (PreparedStatement statement = connection.prepareStatement(UPDATE_QR_SQL)) {
+                    statement.setString(1, qrHash);
+                    statement.setString(2, "NOT_SENT");
+                    statement.setInt(3, student.id());
+                    statement.executeUpdate();
                 }
-
-                StudentTokenRow studentRow = loadStudentToken(connection, teacherId, normalizedStudentCode);
-                if (studentRow == null) {
-                    rollbackQuietly(connection);
-                    return ServiceResult.failure("Student not found for this teacher list.");
-                }
-
-                String qrToken = SecurityUtil.generateOpaqueToken();
-                deactivateActiveQrTokens(connection, studentRow.studentPk);
-                long qrId = insertQrToken(connection, studentRow.studentPk, SecurityUtil.sha256Hex(qrToken));
-                updateStudentQrStatus(connection, studentRow.studentPk, EmailStatus.QUEUED);
-
-                ServiceResult<Integer> emailLogResult = queueStudentQrEmail(connection, (int) studentRow.studentPk, studentRow.email, true);
-                if (!emailLogResult.isSuccess() || emailLogResult.getData() == null) {
-                    rollbackQuietly(connection);
-                    return ServiceResult.failure("Could not send the QR code again.");
-                }
-
-                ServiceResult<Void> auditResult = auditLogService.logAction(connection, teacherId,
-                        "STUDENT_QR_RESEND", "STUDENT", String.valueOf(studentRow.studentPk),
+                emailLogId = emailService.createQueuedEmail(
+                        connection,
+                        "STUDENT_QR",
                         null,
-                        buildStudentJson(studentRow.studentCode, studentRow.sectionName, studentRow.fullName,
-                                studentRow.email, "QUEUED", teacherId),
-                        "Student QR was re-sent from the current teacher list.");
-                if (!auditResult.isSuccess()) {
-                    rollbackQuietly(connection);
-                    return ServiceResult.failure("Could not send the QR code again.");
-                }
-
+                        student.id(),
+                        student.email(),
+                        "Your school QR code was sent again",
+                        "Student QR email sent again."
+                );
                 connection.commit();
-                return ServiceResult.success("Student QR updated.",
-                        new StudentQrRefreshResult(studentRow.studentPk, studentRow.studentCode, studentRow.fullName,
-                                studentRow.email, emailLogResult.getData(), qrId, qrToken));
             } catch (SQLException ex) {
-                rollbackQuietly(connection);
+                connection.rollback();
                 return ServiceResult.failure("Could not send the QR code again.");
             } finally {
-                restoreAutoCommit(connection);
+                connection.setAutoCommit(true);
             }
         } catch (SQLException ex) {
             return ServiceResult.failure("Could not send the QR code again.");
         }
+
+        EmailSendResult emailResult = resendEmailClient.sendStudentQrEmail(
+                student.email(),
+                student.fullName(),
+                student.studentCode(),
+                qrToken,
+                true
+        );
+        updateStudentEmailResult(student.id(), emailLogId, emailResult);
+        if (emailResult.isSuccess()) {
+            return ServiceResult.success("QR code sent again.", null);
+        }
+        return ServiceResult.warning("The QR code was updated, but the email could not be sent.", null);
     }
 
-    public ServiceResult<Void> submitStudentRemovalRequest(int teacherId, String studentCode, String reason) {
+    public ServiceResult<Student> updateStudent(int studentId, int sectionId, String studentCode, String fullName, String email) {
+        String cleanCode = normalizeCode(studentCode);
+        String cleanName = safe(fullName);
+        String cleanEmail = normalizeEmail(email);
+        if (studentId <= 0) {
+            return ServiceResult.failure("Student not found.");
+        }
+        if (sectionId <= 0) {
+            return ServiceResult.failure("Choose the section first.");
+        }
+        if (cleanCode.isBlank() || cleanName.isBlank() || cleanEmail.isBlank()) {
+            return ServiceResult.failure("Complete the student ID, name, and email.");
+        }
+        if (!databaseManager.isReady()) {
+            return ServiceResult.failure(databaseManager.getStatusMessage());
+        }
+        try (Connection connection = databaseManager.openConnection();
+                PreparedStatement statement = connection.prepareStatement(UPDATE_STUDENT_SQL)) {
+            statement.setInt(1, sectionId);
+            statement.setString(2, cleanCode);
+            statement.setString(3, cleanName);
+            statement.setString(4, cleanEmail);
+            statement.setInt(5, studentId);
+            statement.executeUpdate();
+            ServiceResult<Student> studentResult = findStudent(studentId);
+            return studentResult.isSuccess()
+                    ? ServiceResult.success("Student updated.", studentResult.getData())
+                    : ServiceResult.success("Student updated.", null);
+        } catch (SQLException ex) {
+            String msg = ex.getMessage();
+            String state = ex.getSQLState();
+            if ((msg != null && (msg.contains("Duplicate") || msg.contains("duplicate")))
+                    || (state != null && state.startsWith("23"))) {
+                return ServiceResult.failure("That student ID or email is already in use.");
+            }
+            return ServiceResult.failure("Could not update the student.");
+        }
+    }
+
+    public ServiceResult<Void> deactivateStudent(int studentId) {
+        if (studentId <= 0) {
+            return ServiceResult.failure("Student not found.");
+        }
+        if (!databaseManager.isReady()) {
+            return ServiceResult.failure(databaseManager.getStatusMessage());
+        }
+        try (Connection connection = databaseManager.openConnection();
+                PreparedStatement statement = connection.prepareStatement(DEACTIVATE_STUDENT_SQL)) {
+            statement.setInt(1, studentId);
+            statement.executeUpdate();
+            return ServiceResult.success("Student deactivated.", null);
+        } catch (SQLException ex) {
+            return ServiceResult.failure("Could not deactivate the student.");
+        }
+    }
+
+    public ServiceResult<List<String>> getTeacherSectionNames(int teacherId) {
+        if (teacherId <= 0) {
+            return ServiceResult.failure("Teacher not found.");
+        }
         if (!databaseManager.isReady()) {
             return ServiceResult.failure(databaseManager.getStatusMessage());
         }
 
-        String normalizedStudentCode = normalizeStudentCode(studentCode);
-        String normalizedReason = normalizeReason(reason);
-        if (teacherId <= 0) {
-            return ServiceResult.failure("Teacher account is required.");
-        }
-        if (normalizedStudentCode.isBlank()) {
-            return ServiceResult.failure("Student ID is required.");
-        }
-        if (normalizedReason.isBlank()) {
-            return ServiceResult.failure("A removal reason is required.");
-        }
-
-        try (Connection connection = databaseManager.openConnection()) {
-            connection.setAutoCommit(false);
-            try {
-                UserAccountRow teacher = loadUser(connection, teacherId, "TEACHER");
-                if (teacher == null) {
-                    connection.rollback();
-                    return ServiceResult.failure("Teacher account was not found.");
+        Set<String> names = new LinkedHashSet<>();
+        try (Connection connection = databaseManager.openConnection();
+                PreparedStatement statement = connection.prepareStatement(SELECT_TEACHER_SECTIONS_SQL)) {
+            statement.setInt(1, teacherId);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                while (resultSet.next()) {
+                    names.add(resultSet.getString("section_name"));
                 }
-
-                StudentTokenRow studentRow = loadStudentToken(connection, teacherId, normalizedStudentCode);
-                if (studentRow == null) {
-                    connection.rollback();
-                    return ServiceResult.failure("Student not found in your list.");
-                }
-                if (hasPendingRemovalRequest(connection, teacherId, studentRow.studentPk)) {
-                    connection.rollback();
-                    return ServiceResult.failure("There is already a pending removal request for this student.");
-                }
-
-                long requestId = insertRemovalRequest(connection, teacherId, studentRow.studentPk, normalizedReason);
-                ServiceResult<Void> auditResult = auditLogService.logAction(connection, teacherId,
-                        "STUDENT_REMOVAL_REQUEST", "STUDENT_REMOVAL_REQUEST", String.valueOf(requestId),
-                        null,
-                        "{\"student_code\":\"" + escapeJson(studentRow.studentCode) + "\",\"section_name\":\"" + escapeJson(studentRow.sectionName)
-                        + "\",\"reason\":\"" + escapeJson(normalizedReason) + "\"}",
-                        "Teacher requested removal of the student from the roster.");
-                if (!auditResult.isSuccess()) {
-                    rollbackQuietly(connection);
-                    return ServiceResult.failure("Could not submit the removal request.");
-                }
-                connection.commit();
-                return ServiceResult.success("Removal request sent to admin for approval.", null);
-            } catch (SQLException ex) {
-                rollbackQuietly(connection);
-                return ServiceResult.failure("Could not submit the removal request.");
-            } finally {
-                restoreAutoCommit(connection);
             }
+            return ServiceResult.success("Teacher sections loaded.", new ArrayList<>(names));
         } catch (SQLException ex) {
-            return ServiceResult.failure("Could not submit the removal request.");
+            return ServiceResult.failure("Could not load class sections.");
+        }
+    }
+
+    public ServiceResult<Void> submitStudentRemovalRequest(int teacherId, int studentId, String reason) {
+        String cleanReason = safe(reason);
+        if (teacherId <= 0 || studentId <= 0) {
+            return ServiceResult.failure("Choose the student first.");
+        }
+        if (cleanReason.isBlank()) {
+            return ServiceResult.failure("Enter a short reason.");
+        }
+        if (!databaseManager.isReady()) {
+            return ServiceResult.failure(databaseManager.getStatusMessage());
+        }
+
+        try (Connection connection = databaseManager.openConnection();
+                PreparedStatement statement = connection.prepareStatement(INSERT_REMOVAL_REQUEST_SQL)) {
+            statement.setInt(1, teacherId);
+            statement.setInt(2, studentId);
+            statement.setString(3, cleanReason);
+            statement.executeUpdate();
+            return ServiceResult.success("Removal request sent to the admin.", null);
+        } catch (SQLException ex) {
+            return ServiceResult.failure("Could not send the removal request.");
         }
     }
 
     public ServiceResult<List<StudentRemovalRequest>> getStudentRemovalRequests() {
-        return loadRemovalRequests(SELECT_REMOVAL_REQUESTS_SQL, null);
+        return loadRemovalRequests(SELECT_ALL_REMOVAL_REQUESTS_SQL, null);
     }
 
     public ServiceResult<List<StudentRemovalRequest>> getStudentRemovalRequestsForTeacher(int teacherId) {
-        if (teacherId <= 0) {
-            return ServiceResult.failure("Teacher account is required.");
-        }
-        return loadRemovalRequests(SELECT_REMOVAL_REQUESTS_FOR_TEACHER_SQL, teacherId);
+        return loadRemovalRequests(SELECT_TEACHER_REMOVAL_REQUESTS_SQL, teacherId);
     }
 
-    public ServiceResult<Void> reviewStudentRemovalRequest(int reviewerUserId, int requestId, boolean approve, String reviewerName) {
+    public ServiceResult<Void> reviewStudentRemovalRequest(int reviewerId, int requestId, boolean approve) {
+        if (reviewerId <= 0 || requestId <= 0) {
+            return ServiceResult.failure("Choose a request first.");
+        }
         if (!databaseManager.isReady()) {
             return ServiceResult.failure(databaseManager.getStatusMessage());
-        }
-        if (reviewerUserId <= 0) {
-            return ServiceResult.failure("Admin account is required.");
-        }
-        if (requestId <= 0) {
-            return ServiceResult.failure("Removal request selection is required.");
         }
 
         try (Connection connection = databaseManager.openConnection()) {
             connection.setAutoCommit(false);
-            try {
-                UserAccountRow admin = loadUser(connection, reviewerUserId, "ADMIN");
-                if (admin == null) {
-                    connection.rollback();
-                    return ServiceResult.failure("Admin account was not found.");
+            try (PreparedStatement select = connection.prepareStatement(SELECT_REMOVAL_REQUEST_SQL)) {
+                select.setInt(1, requestId);
+                try (ResultSet resultSet = select.executeQuery()) {
+                    if (!resultSet.next()) {
+                        connection.rollback();
+                        return ServiceResult.failure("Request not found.");
+                    }
+                    StudentRemovalRequest request = mapRemovalRequest(resultSet);
+                    if (request.status() != RequestStatus.PENDING) {
+                        connection.rollback();
+                        return ServiceResult.failure("This request was already reviewed.");
+                    }
+                    try (PreparedStatement update = connection.prepareStatement(UPDATE_REMOVAL_REQUEST_SQL)) {
+                        update.setString(1, approve ? "APPROVED" : "REJECTED");
+                        update.setInt(2, reviewerId);
+                        update.setInt(3, requestId);
+                        update.executeUpdate();
+                    }
+                    if (approve) {
+                        try (PreparedStatement deactivate = connection.prepareStatement(DEACTIVATE_STUDENT_SQL)) {
+                            deactivate.setInt(1, request.studentId());
+                            deactivate.executeUpdate();
+                        }
+                    }
+                    connection.commit();
+                    return ServiceResult.success(approve ? "Student removed from the class list." : "Request rejected.", null);
                 }
-
-                RemovalRequestRow requestRow = loadRemovalRequest(connection, requestId);
-                if (requestRow == null) {
-                    connection.rollback();
-                    return ServiceResult.failure("Removal request not found.");
-                }
-                if (requestRow.status != ScheduleRequestStatus.PENDING) {
-                    connection.rollback();
-                    return ServiceResult.failure("Only pending removal requests can be reviewed.");
-                }
-
-                if (approve) {
-                    deactivateAssignment(connection, requestRow.teacherId, requestRow.studentPk);
-                }
-                updateRemovalRequestStatus(connection, requestId, approve ? "APPROVED" : "REJECTED", reviewerUserId);
-                ServiceResult<Void> auditResult = auditLogService.logAction(connection, reviewerUserId,
-                        approve ? "STUDENT_REMOVAL_APPROVE" : "STUDENT_REMOVAL_REJECT",
-                        "STUDENT_REMOVAL_REQUEST",
-                        String.valueOf(requestId),
-                        "{\"status\":\"PENDING\"}",
-                        "{\"status\":\"" + (approve ? "APPROVED" : "REJECTED") + "\",\"reviewed_by\":\"" + escapeJson(safe(reviewerName)) + "\"}",
-                        approve
-                                ? "Admin approved the teacher request to remove the student from the roster."
-                                : "Admin rejected the teacher request to remove the student from the roster.");
-                if (!auditResult.isSuccess()) {
-                    rollbackQuietly(connection);
-                    return ServiceResult.failure("Could not review the removal request.");
-                }
-                connection.commit();
-                return ServiceResult.success(approve ? "Student removal approved." : "Student removal request rejected.", null);
             } catch (SQLException ex) {
-                rollbackQuietly(connection);
-                return ServiceResult.failure("Could not review the removal request.");
+                connection.rollback();
+                return ServiceResult.failure("Could not review the request.");
             } finally {
-                restoreAutoCommit(connection);
+                connection.setAutoCommit(true);
             }
         } catch (SQLException ex) {
-            return ServiceResult.failure("Could not review the removal request.");
+            return ServiceResult.failure("Could not review the request.");
+        }
+    }
+
+    private ServiceResult<List<Student>> loadStudents(String sql, Integer value) {
+        if (!databaseManager.isReady()) {
+            return ServiceResult.failure(databaseManager.getStatusMessage());
+        }
+        List<Student> students = new ArrayList<>();
+        try (Connection connection = databaseManager.openConnection();
+                PreparedStatement statement = connection.prepareStatement(sql)) {
+            if (value != null) {
+                statement.setInt(1, value);
+            }
+            try (ResultSet resultSet = statement.executeQuery()) {
+                while (resultSet.next()) {
+                    students.add(mapStudent(resultSet));
+                }
+            }
+            return ServiceResult.success("Students loaded.", students);
+        } catch (SQLException ex) {
+            return ServiceResult.failure("Could not load students.");
+        }
+    }
+
+    private ServiceResult<Student> loadOneStudent(String sql, int value) {
+        if (value <= 0) {
+            return ServiceResult.failure("Student not found.");
+        }
+        if (!databaseManager.isReady()) {
+            return ServiceResult.failure(databaseManager.getStatusMessage());
+        }
+        try (Connection connection = databaseManager.openConnection();
+                PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setInt(1, value);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (!resultSet.next()) {
+                    return ServiceResult.failure("Student not found.");
+                }
+                return ServiceResult.success("Student loaded.", mapStudent(resultSet));
+            }
+        } catch (SQLException ex) {
+            return ServiceResult.failure("Could not load the student.");
         }
     }
 
@@ -745,7 +670,6 @@ public final class StudentService {
         if (!databaseManager.isReady()) {
             return ServiceResult.failure(databaseManager.getStatusMessage());
         }
-
         List<StudentRemovalRequest> requests = new ArrayList<>();
         try (Connection connection = databaseManager.openConnection();
                 PreparedStatement statement = connection.prepareStatement(sql)) {
@@ -757,511 +681,122 @@ public final class StudentService {
                     requests.add(mapRemovalRequest(resultSet));
                 }
             }
-            return ServiceResult.success("Loaded roster removal requests from MariaDB.", requests);
+            return ServiceResult.success("Removal requests loaded.", requests);
         } catch (SQLException ex) {
-            return ServiceResult.failure("Could not load removal requests: " + ex.getMessage());
+            return ServiceResult.failure("Could not load removal requests.");
         }
     }
 
-    private UserAccountRow loadUser(Connection connection, int userId, String role) throws SQLException {
-        String sql = "ADMIN".equalsIgnoreCase(role) ? SELECT_ACTIVE_ADMIN_SQL : SELECT_ACTIVE_TEACHER_SQL;
-        try (PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setInt(1, userId);
-            try (ResultSet resultSet = statement.executeQuery()) {
-                if (!resultSet.next()) {
-                    return null;
-                }
-                return new UserAccountRow(
-                        resultSet.getInt("user_id"),
-                        resultSet.getString("full_name"),
-                        resultSet.getString("email"),
-                        resultSet.getString("account_status")
-                );
-            }
-        }
-    }
-
-    private UserAccountRow loadActiveUser(Connection connection, int userId, String role, String label) throws SQLException {
-        UserAccountRow user = loadUser(connection, userId, role);
-        if (user == null) {
-            return null;
-        }
-        if (!"ACTIVE".equalsIgnoreCase(user.accountStatus)) {
-            throw new SQLException(label + " account is not active.");
-        }
-        return user;
-    }
-
-    private ServiceResult<Void> validateStudentActors(Connection connection, int adminUserId, int teacherId) {
-        try {
-            UserAccountRow admin = loadActiveUser(connection, adminUserId, "ADMIN", "Admin");
-            if (admin == null) {
-                return ServiceResult.failure("Admin account was not found.");
-            }
-            UserAccountRow teacher = loadActiveUser(connection, teacherId, "TEACHER", "Assigned teacher");
-            if (teacher == null) {
-                return ServiceResult.failure("Assigned teacher account was not found.");
-            }
-            return ServiceResult.success("Student actors are valid.", null);
-        } catch (SQLException ex) {
-            return ServiceResult.failure(ex.getMessage());
-        }
-    }
-
-    private boolean studentCodeExists(Connection connection, String studentCode) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(CHECK_STUDENT_CODE_SQL)) {
-            statement.setString(1, studentCode);
-            try (ResultSet resultSet = statement.executeQuery()) {
-                return resultSet.next();
-            }
-        }
-    }
-
-    private boolean studentEmailExists(Connection connection, String email) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(CHECK_STUDENT_EMAIL_SQL)) {
-            statement.setString(1, email);
-            try (ResultSet resultSet = statement.executeQuery()) {
-                return resultSet.next();
-            }
-        }
-    }
-
-    private long insertStudentProfile(Connection connection, int teacherId, int adminId, String studentCode, String sectionName,
-            String fullName, String email) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(INSERT_STUDENT_SQL, Statement.RETURN_GENERATED_KEYS)) {
-            statement.setString(1, studentCode);
-            statement.setString(2, fullName);
-            statement.setString(3, email);
-            statement.setString(4, sectionName);
-            statement.setInt(5, teacherId);
-            statement.setInt(6, adminId);
-            statement.executeUpdate();
-            try (ResultSet keys = statement.getGeneratedKeys()) {
-                if (!keys.next()) {
-                    throw new SQLException("Student insert did not return a generated key.");
-                }
-                return keys.getLong(1);
-            }
-        }
-    }
-
-    private void insertTeacherAssignment(Connection connection, int teacherId, long studentPk) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(INSERT_ASSIGNMENT_SQL)) {
-            statement.setInt(1, teacherId);
-            statement.setLong(2, studentPk);
-            statement.executeUpdate();
-        }
-    }
-
-    private long insertQrToken(Connection connection, long studentPk, String tokenHash) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(INSERT_QR_TOKEN_SQL, Statement.RETURN_GENERATED_KEYS)) {
-            statement.setLong(1, studentPk);
-            statement.setString(2, tokenHash);
-            statement.executeUpdate();
-            try (ResultSet keys = statement.getGeneratedKeys()) {
-                if (!keys.next()) {
-                    throw new SQLException("QR token insert did not return a generated key.");
-                }
-                return keys.getLong(1);
-            }
-        }
-    }
-
-    private void deactivateActiveQrTokens(Connection connection, long studentPk) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(DEACTIVATE_QR_TOKENS_SQL)) {
-            statement.setLong(1, studentPk);
-            statement.executeUpdate();
-        }
-    }
-
-    private ServiceResult<Integer> queueStudentQrEmail(Connection connection, int studentPk, String recipientEmail,
-            boolean resendMode) {
-        ServiceResult<ppb.qrattend.model.AppDomain.EmailDispatch> emailLogResult =
-                emailDispatchService.queueStudentQrEmail(connection, studentPk, recipientEmail, resendMode);
-        if (!emailLogResult.isSuccess() || emailLogResult.getData() == null) {
-            return ServiceResult.failure("Could not queue the student email.");
-        }
-        return ServiceResult.success("Student email queued.", emailLogResult.getData().getId());
-    }
-
-    private StudentTokenRow loadStudentToken(Connection connection, int teacherId, String studentCode) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(SELECT_ACTIVE_QR_SQL)) {
-            statement.setInt(1, teacherId);
-            statement.setString(2, studentCode);
-            try (ResultSet resultSet = statement.executeQuery()) {
-                if (!resultSet.next()) {
-                    return null;
-                }
-                return new StudentTokenRow(
-                        resultSet.getLong("student_pk"),
-                        resultSet.getString("student_code"),
-                        resultSet.getString("section_name"),
-                        resultSet.getString("full_name"),
-                        resultSet.getString("email"),
-                        mapEmailStatus(resultSet.getString("qr_status")),
-                        resultSet.getLong("qr_id")
-                );
-            }
-        }
-    }
-
-    private boolean hasPendingRemovalRequest(Connection connection, int teacherId, long studentPk) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(CHECK_PENDING_REMOVAL_REQUEST_SQL)) {
-            statement.setInt(1, teacherId);
-            statement.setLong(2, studentPk);
-            try (ResultSet resultSet = statement.executeQuery()) {
-                return resultSet.next();
-            }
-        }
-    }
-
-    private long insertRemovalRequest(Connection connection, int teacherId, long studentPk, String reason) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(INSERT_REMOVAL_REQUEST_SQL, Statement.RETURN_GENERATED_KEYS)) {
-            statement.setInt(1, teacherId);
-            statement.setLong(2, studentPk);
-            statement.setString(3, reason);
-            statement.executeUpdate();
-            try (ResultSet keys = statement.getGeneratedKeys()) {
-                if (!keys.next()) {
-                    throw new SQLException("Removal request insert did not return a generated key.");
-                }
-                return keys.getLong(1);
-            }
-        }
-    }
-
-    private RemovalRequestRow loadRemovalRequest(Connection connection, int requestId) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(SELECT_REMOVAL_REQUEST_BY_ID_SQL)) {
-            statement.setInt(1, requestId);
-            try (ResultSet resultSet = statement.executeQuery()) {
-                if (!resultSet.next()) {
-                    return null;
-                }
-                return mapRemovalRequestRow(resultSet);
-            }
-        }
-    }
-
-    private void updateRemovalRequestStatus(Connection connection, int requestId, String status, int reviewerUserId) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(UPDATE_REMOVAL_REQUEST_SQL)) {
-            statement.setString(1, status);
-            statement.setInt(2, reviewerUserId);
-            statement.setInt(3, requestId);
-            statement.executeUpdate();
-        }
-    }
-
-    private void deactivateAssignment(Connection connection, int teacherId, long studentPk) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(DEACTIVATE_ASSIGNMENT_SQL)) {
-            statement.setInt(1, teacherId);
-            statement.setLong(2, studentPk);
-            statement.executeUpdate();
-        }
-    }
-
-    private void updateStudentQrStatus(long studentPk, EmailStatus status) {
+    private void updateStudentEmailResult(int studentId, int emailLogId, EmailSendResult emailResult) {
         try (Connection connection = databaseManager.openConnection()) {
-            updateStudentQrStatus(connection, studentPk, status);
+            connection.setAutoCommit(false);
+            try (PreparedStatement statement = connection.prepareStatement("""
+                    UPDATE students
+                    SET qr_status = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE student_id = ?
+                    """)) {
+                statement.setString(1, emailResult.isSuccess() ? "SENT" : "FAILED");
+                statement.setInt(2, studentId);
+                statement.executeUpdate();
+                if (emailResult.isSuccess()) {
+                    emailService.markSent(connection, emailLogId, emailResult.getProviderMessageId());
+                } else {
+                    emailService.markFailed(connection, emailLogId, emailResult.getMessage());
+                }
+                connection.commit();
+            } catch (SQLException ex) {
+                connection.rollback();
+            } finally {
+                connection.setAutoCommit(true);
+            }
         } catch (SQLException ignored) {
         }
     }
 
-    private void updateStudentQrStatus(Connection connection, long studentPk, EmailStatus status) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(UPDATE_STUDENT_QR_STATUS_SQL)) {
-            statement.setString(1, status.name());
-            statement.setLong(2, studentPk);
-            statement.executeUpdate();
-        }
-    }
-
-    private void updateQrTokenEmailedAt(long qrId) {
-        try (Connection connection = databaseManager.openConnection();
-                PreparedStatement statement = connection.prepareStatement(UPDATE_QR_EMAILED_AT_SQL)) {
-            statement.setLong(1, qrId);
-            statement.executeUpdate();
-        } catch (SQLException ignored) {
-        }
-    }
-
-    private StudentProfile loadStudentProfileOrFallback(int teacherId, String studentCode, String sectionName,
-            String fullName, String email, EmailStatus qrStatus) {
-        ServiceResult<StudentProfile> profileResult = findStudentForTeacher(teacherId, studentCode);
-        if (profileResult.isSuccess() && profileResult.getData() != null) {
-            return profileResult.getData();
-        }
-        return new StudentProfile(studentCode, teacherId, sectionName, fullName, email, qrStatus, LocalDateTime.now());
-    }
-
-    private StudentProfile mapStudentProfile(ResultSet resultSet, int teacherId) throws SQLException {
-        return new StudentProfile(
+    private Student mapStudent(ResultSet resultSet) throws SQLException {
+        return new Student(
+                resultSet.getInt("student_id"),
                 resultSet.getString("student_code"),
-                teacherId,
-                safe(resultSet.getString("section_name")),
                 resultSet.getString("full_name"),
                 resultSet.getString("email"),
-                mapEmailStatus(resultSet.getString("qr_status")),
-                resultSet.getTimestamp("created_at").toLocalDateTime()
-        );
-    }
-
-    private RemovalRequestRow mapRemovalRequestRow(ResultSet resultSet) throws SQLException {
-        return new RemovalRequestRow(
-                resultSet.getInt("removal_request_id"),
-                resultSet.getInt("teacher_user_id"),
-                resultSet.getString("teacher_name"),
-                resultSet.getLong("student_pk"),
-                resultSet.getString("student_code"),
-                resultSet.getString("student_name"),
-                safe(resultSet.getString("section_name")),
-                safe(resultSet.getString("reason")),
-                mapRequestStatus(resultSet.getString("request_status")),
-                safe(resultSet.getString("reviewed_by_name")),
-                timestampToLocalDateTime(resultSet.getTimestamp("reviewed_at")),
-                resultSet.getTimestamp("created_at").toLocalDateTime()
+                resultSet.getInt("section_id"),
+                resultSet.getString("section_name"),
+                resultSet.getBoolean("is_active"),
+                mapEmailStatus(resultSet.getString("qr_status"))
         );
     }
 
     private StudentRemovalRequest mapRemovalRequest(ResultSet resultSet) throws SQLException {
-        return mapRemovalRequestRow(resultSet).toDomain();
+        return new StudentRemovalRequest(
+                resultSet.getInt("request_id"),
+                resultSet.getInt("teacher_user_id"),
+                resultSet.getString("teacher_name"),
+                resultSet.getInt("student_id"),
+                resultSet.getString("student_code"),
+                resultSet.getString("student_name"),
+                resultSet.getString("section_name"),
+                resultSet.getString("reason"),
+                mapRequestStatus(resultSet.getString("status")),
+                safe(resultSet.getString("reviewed_by")),
+                resultSet.getTimestamp("created_at").toLocalDateTime(),
+                resultSet.getTimestamp("reviewed_at") == null ? null : resultSet.getTimestamp("reviewed_at").toLocalDateTime()
+        );
     }
 
-    private ScheduleRequestStatus mapRequestStatus(String rawStatus) {
-        if (rawStatus == null) {
-            return ScheduleRequestStatus.PENDING;
+    private EmailStatus mapEmailStatus(String raw) {
+        if (raw == null) {
+            return EmailStatus.NOT_SENT;
         }
-        return switch (rawStatus.trim().toUpperCase(Locale.ENGLISH)) {
-            case "APPROVED" -> ScheduleRequestStatus.APPROVED;
-            case "REJECTED" -> ScheduleRequestStatus.REJECTED;
-            default -> ScheduleRequestStatus.PENDING;
-        };
-    }
-
-    private EmailStatus mapEmailStatus(String rawStatus) {
-        if (rawStatus == null) {
-            return EmailStatus.QUEUED;
-        }
-        return switch (rawStatus.trim().toUpperCase(Locale.ENGLISH)) {
-            case "SENT" -> EmailStatus.SENT;
-            case "FAILED" -> EmailStatus.FAILED;
-            default -> EmailStatus.QUEUED;
-        };
-    }
-
-    private String normalizeStudentCode(String studentCode) {
-        return safe(studentCode).toUpperCase(Locale.ENGLISH);
-    }
-
-    private String normalizeSection(String sectionName) {
-        return safe(sectionName);
-    }
-
-    private String normalizeName(String fullName) {
-        return safe(fullName);
-    }
-
-    private String normalizeEmail(String email) {
-        return safe(email).toLowerCase(Locale.ENGLISH);
-    }
-
-    private String normalizeReason(String reason) {
-        return safe(reason);
-    }
-
-    private boolean looksLikeEmail(String email) {
-        return email.contains("@") && email.contains(".");
-    }
-
-    private String buildStudentJson(String studentCode, String sectionName, String fullName, String email, String qrStatus, int teacherId) {
-        return "{"
-                + "\"student_code\":\"" + escapeJson(studentCode) + "\","
-                + "\"section_name\":\"" + escapeJson(sectionName) + "\","
-                + "\"full_name\":\"" + escapeJson(fullName) + "\","
-                + "\"email\":\"" + escapeJson(email) + "\","
-                + "\"qr_status\":\"" + escapeJson(qrStatus) + "\","
-                + "\"teacher_user_id\":" + teacherId
-                + "}";
-    }
-
-    private LocalDateTime timestampToLocalDateTime(java.sql.Timestamp timestamp) {
-        return timestamp == null ? null : timestamp.toLocalDateTime();
-    }
-
-    private void rollbackQuietly(Connection connection) {
-        try {
-            connection.rollback();
-        } catch (SQLException ignored) {
+        String upper = raw.trim().toUpperCase();
+        if ("SENT".equals(upper)) {
+            return EmailStatus.SENT;
+        } else if ("FAILED".equals(upper)) {
+            return EmailStatus.FAILED;
+        } else {
+            return EmailStatus.NOT_SENT;
         }
     }
 
-    private void restoreAutoCommit(Connection connection) {
-        try {
-            connection.setAutoCommit(true);
-        } catch (SQLException ignored) {
+    private RequestStatus mapRequestStatus(String raw) {
+        if (raw == null) {
+            return RequestStatus.PENDING;
+        }
+        String upper = raw.trim().toUpperCase();
+        if ("APPROVED".equals(upper)) {
+            return RequestStatus.APPROVED;
+        } else if ("REJECTED".equals(upper)) {
+            return RequestStatus.REJECTED;
+        } else {
+            return RequestStatus.PENDING;
         }
     }
 
-    private String escapeJson(String value) {
-        return safe(value)
-                .replace("\\", "\\\\")
-                .replace("\"", "\\\"");
+    private String[] splitStudentLine(String line) {
+        String clean = safe(line);
+        if (clean.contains("\t")) {
+            String[] parts = clean.split("\\t");
+            return normalizeParts(parts);
+        }
+        String[] parts = clean.split(",", 3);
+        return normalizeParts(parts);
+    }
+
+    private String[] normalizeParts(String[] parts) {
+        if (parts.length < 3) {
+            return parts;
+        }
+        return new String[]{safe(parts[0]), safe(parts[1]), normalizeEmail(parts[2])};
+    }
+
+    private String normalizeCode(String value) {
+        return safe(value).toUpperCase();
+    }
+
+    private String normalizeEmail(String value) {
+        return safe(value).toLowerCase();
     }
 
     private String safe(String value) {
         return value == null ? "" : value.trim();
-    }
-
-    private static final class StudentCreateDraft {
-
-        private final int actorUserId;
-        private final int teacherId;
-        private final String sectionName;
-        private final String studentCode;
-        private final String fullName;
-        private final String email;
-        private final String qrToken;
-
-        private StudentCreateDraft(int actorUserId, int teacherId, String sectionName, String studentCode,
-                String fullName, String email, String qrToken) {
-            this.actorUserId = actorUserId;
-            this.teacherId = teacherId;
-            this.sectionName = sectionName;
-            this.studentCode = studentCode;
-            this.fullName = fullName;
-            this.email = email;
-            this.qrToken = qrToken;
-        }
-    }
-
-    private static final class StudentCreateResult {
-
-        private final long studentPk;
-        private final int teacherId;
-        private final String sectionName;
-        private final String studentCode;
-        private final String fullName;
-        private final String email;
-        private final int emailLogId;
-        private final long qrId;
-
-        private StudentCreateResult(long studentPk, int teacherId, String sectionName, String studentCode,
-                String fullName, String email, int emailLogId, long qrId) {
-            this.studentPk = studentPk;
-            this.teacherId = teacherId;
-            this.sectionName = sectionName;
-            this.studentCode = studentCode;
-            this.fullName = fullName;
-            this.email = email;
-            this.emailLogId = emailLogId;
-            this.qrId = qrId;
-        }
-    }
-
-    private static final class StudentQrRefreshResult {
-
-        private final long studentPk;
-        private final String studentCode;
-        private final String fullName;
-        private final String email;
-        private final int emailLogId;
-        private final long qrId;
-        private final String qrToken;
-
-        private StudentQrRefreshResult(long studentPk, String studentCode, String fullName, String email,
-                int emailLogId, long qrId, String qrToken) {
-            this.studentPk = studentPk;
-            this.studentCode = studentCode;
-            this.fullName = fullName;
-            this.email = email;
-            this.emailLogId = emailLogId;
-            this.qrId = qrId;
-            this.qrToken = qrToken;
-        }
-    }
-
-    private static final class UserAccountRow {
-
-        private final int userId;
-        private final String fullName;
-        private final String email;
-        private final String accountStatus;
-
-        private UserAccountRow(int userId, String fullName, String email, String accountStatus) {
-            this.userId = userId;
-            this.fullName = fullName;
-            this.email = email;
-            this.accountStatus = accountStatus;
-        }
-    }
-
-    private static final class StudentTokenRow {
-
-        private final long studentPk;
-        private final String studentCode;
-        private final String sectionName;
-        private final String fullName;
-        private final String email;
-        private final EmailStatus qrStatus;
-        private final long qrId;
-
-        private StudentTokenRow(long studentPk, String studentCode, String sectionName, String fullName,
-                String email, EmailStatus qrStatus, long qrId) {
-            this.studentPk = studentPk;
-            this.studentCode = studentCode;
-            this.sectionName = sectionName;
-            this.fullName = fullName;
-            this.email = email;
-            this.qrStatus = qrStatus;
-            this.qrId = qrId;
-        }
-    }
-
-    private static final class RemovalRequestRow {
-
-        private final int id;
-        private final int teacherId;
-        private final String teacherName;
-        private final long studentPk;
-        private final String studentCode;
-        private final String studentName;
-        private final String sectionName;
-        private final String reason;
-        private final ScheduleRequestStatus status;
-        private final String reviewedBy;
-        private final LocalDateTime reviewedAt;
-        private final LocalDateTime createdAt;
-
-        private RemovalRequestRow(int id, int teacherId, String teacherName, long studentPk, String studentCode,
-                String studentName, String sectionName, String reason, ScheduleRequestStatus status,
-                String reviewedBy, LocalDateTime reviewedAt, LocalDateTime createdAt) {
-            this.id = id;
-            this.teacherId = teacherId;
-            this.teacherName = teacherName;
-            this.studentPk = studentPk;
-            this.studentCode = studentCode;
-            this.studentName = studentName;
-            this.sectionName = sectionName;
-            this.reason = reason;
-            this.status = status;
-            this.reviewedBy = reviewedBy;
-            this.reviewedAt = reviewedAt;
-            this.createdAt = createdAt;
-        }
-
-        private StudentRemovalRequest toDomain() {
-            StudentRemovalRequest request = new StudentRemovalRequest(
-                    id,
-                    teacherId,
-                    teacherName,
-                    studentCode,
-                    studentName,
-                    sectionName,
-                    reason,
-                    status,
-                    createdAt
-            );
-            request.setReviewedBy(reviewedBy);
-            request.setReviewedAt(reviewedAt);
-            return request;
-        }
     }
 }

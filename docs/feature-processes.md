@@ -1,154 +1,122 @@
 # Feature Processes
 
-This file explains the main app features from the user's point of view and the code path behind them.
+This file explains the most important user flows.
 
-## 1. Teacher creation
+## 1. Teacher Creation
 
-User flow:
+1. Admin opens `Teachers`
+2. Admin types teacher name and email
+3. `AppStore.addTeacher(...)` is called
+4. `TeacherService`:
+   - validates input
+   - creates the teacher in `users`
+   - creates an email log row
+   - sends password email through Resend
+   - updates the email log result
 
-1. admin opens `Add Teacher`
-2. admin types teacher name and teacher email
-3. admin clicks `Add Teacher`
-4. password email is sent to the teacher
+## 2. Student Creation
 
-Code flow:
+There are two ways:
 
-1. `TeachersScreen`
-2. `AppDataStore.addTeacher(...)`
-3. `TeacherService.createTeacherAccount(...)`
-4. `EmailDispatchService`
-5. `ResendEmailClient`
+- bulk import
+- manual add
 
-## 2. Student creation
+Both start in `Students`.
 
-User flow:
+### Bulk import
 
-1. admin opens `Add Student`
-2. admin chooses the teacher
-3. admin types section, student ID, full name, and email
-4. admin clicks `Add Student`
-5. student QR code is sent by email
+1. Admin chooses a section
+2. Admin pastes lines like `student id, full name, email`
+3. `StudentService.importStudents(...)` loops over the lines
+4. Each good row calls `addStudent(...)`
 
-Code flow:
+### Manual add
 
-1. `AdminStudentsScreen`
-2. `AppDataStore.addStudent(...)`
-3. `StudentService.createStudentProfileByAdmin(...)`
-4. `EmailDispatchService`
-5. `ResendEmailClient`
+1. Admin chooses a section
+2. Admin types one student ID, one name, one email
+3. `StudentService.addStudent(...)`:
+   - validates input
+   - creates one QR token value
+   - stores only the QR hash in the database
+   - saves the student
+   - saves an email log
+   - sends the QR email through Resend
 
-## 3. Schedule setup
+## 3. Schedule Creation
 
-User flow:
+1. Admin opens `Schedule`
+2. Admin picks teacher, section, subject, room, day, and time from dropdowns
+3. `ScheduleService.addSchedule(...)`:
+   - validates input
+   - checks teacher time conflict
+   - saves the schedule row
 
-1. admin opens `Set Schedule`
-2. admin chooses the teacher
-3. admin adds subject, day, time, and room
-4. admin clicks `Save Class`
+## 4. Schedule Change Request
 
-Code flow:
+1. Teacher opens `My Schedule`
+2. Teacher picks the saved class to change
+3. Teacher picks the new section, subject, room, day, and time
+4. Teacher adds a reason
+5. `ScheduleService.submitScheduleRequest(...)` saves the request
+6. Admin reviews it in `Requests`
 
-1. `AdminSchedulesScreen`
-2. `AppDataStore.addScheduleSlot(...)`
-3. `ScheduleService.createApprovedScheduleSlot(...)`
+## 5. Student Removal Request
 
-## 4. Teacher schedule change request
+1. Teacher opens `My Class List`
+2. Teacher selects a student
+3. Teacher types a short reason
+4. `StudentService.submitStudentRemovalRequest(...)` saves the request
+5. Admin reviews it in `Requests`
 
-User flow:
+## 6. Attendance
 
-1. teacher opens `Schedule Help`
-2. teacher chooses the class
-3. teacher loads the class into the form
-4. teacher changes the details
-5. teacher clicks `Ask for Change`
-6. admin reviews the request in `Requests`
+### Automatic scheduled class
 
-Code flow:
+1. Teacher opens `Attendance`
+2. `AttendanceService.getCurrentSessionForTeacher(...)` checks the current day and time
+3. If the saved schedule matches the current time:
+   - it loads or creates the class session automatically
 
-1. `TeacherScheduleScreen`
-2. `AppDataStore.submitScheduleChangeRequest(...)`
-3. `ScheduleService.submitScheduleCorrectionRequest(...)`
-4. admin uses `RequestsScreen`
-5. `AppDataStore.reviewScheduleRequest(...)`
+### Temporary class
 
-## 5. Attendance
+If no class is open:
 
-User flow:
+1. Teacher picks section and subject
+2. Teacher clicks `Start Temporary Class`
+3. `AttendanceService.startTemporaryClass(...)` saves a temporary session
 
-```mermaid
-flowchart TD
-    A["Teacher opens Attendance"] --> B["Step 1: Start class"]
-    B --> C["Step 2: Scan student QR"]
-    C --> D{"Did the scan work?"}
-    D -->|Yes| E["Save attendance"]
-    D -->|No| F["Step 3: Need help?"]
-    F --> G["Mark attendance without QR"]
-```
+### QR attendance
 
-Code flow:
+1. Teacher scans the QR code
+2. `AttendanceService.markAttendanceFromQr(...)`:
+   - loads the current open class
+   - hashes the scanned value
+   - looks for a student in the current section
+   - blocks duplicate attendance
+   - saves the record
 
-1. `AttendanceScreen`
-2. `AppDataStore.getSessionForTeacher(...)`
-3. `AttendanceService`
-4. `QrScannerDialog` and `QrCodeService` for scanning
+### Manual attendance
 
-## 6. Student removal request
-
-User flow:
-
-1. teacher opens `Class List`
-2. teacher chooses the student
-3. teacher writes the reason
-4. teacher clicks `Ask Admin`
-5. admin checks it in `Requests`
-6. admin approves or rejects it
-
-Code flow:
-
-1. `TeacherRosterScreen`
-2. `AppDataStore.requestStudentRemoval(...)`
-3. `StudentService.submitStudentRemovalRequest(...)`
-4. `RequestsScreen`
-5. `AppDataStore.reviewStudentRemovalRequest(...)`
+1. Teacher clicks a student button
+2. `AttendanceService.markManualAttendance(...)`:
+   - checks the current open class
+   - checks that the student belongs to the current class section
+   - blocks duplicate attendance
+   - saves the record
 
 ## 7. Reports
 
-User flow:
+1. User chooses filters
+2. `ReportService` loads:
+   - summary numbers
+   - matching attendance records
 
-1. user opens `Reports`
-2. user chooses a subject or keeps `All Subjects`
-3. user clicks `Show Report`
-4. summary and attendance records refresh
-
-Code flow:
-
-1. `ReportsScreen`
-2. `AppDataStore.exportAttendanceSummary(...)`
-3. `ReportService`
+Teachers can also use `Ask AI` on the report page.
 
 ## 8. Ask AI
 
-Teacher can ask AI inside:
-
-- home
-- attendance
-- reports
-
-User flow:
-
-1. teacher types a question
-2. teacher clicks `Ask AI`
-3. the page context is gathered
-4. Gemini returns a reply
-5. the conversation updates on the same page
-
-Code flow:
-
-1. `StoreTeacherAssistantSupport`
-2. `AiInsightService`
-3. `GeminiAiClient`
-
-Important safety rule:
-
-- AI should use page facts
-- AI should not receive passwords, raw QR secrets, or DB config values
+1. Teacher opens Dashboard, Attendance, or Reports
+2. Teacher types a question
+3. `AppStore.askAi(...)` builds page context
+4. `AiChatService` sends the question and the page facts to Gemini
+5. The answer stays in memory for the current app session only

@@ -7,8 +7,8 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.time.LocalDateTime;
 import ppb.qrattend.service.ServiceResult;
+import ppb.qrattend.util.AppClock;
 
 public final class GeminiAiClient implements AiClient {
 
@@ -16,9 +16,6 @@ public final class GeminiAiClient implements AiClient {
     private final HttpClient httpClient;
 
     public GeminiAiClient(AiConfig config) {
-        // Mini-code guide:
-        // 1. Keep the shared AI config for prompt/model/api-key access.
-        // 2. Create one HttpClient with the configured connection timeout.
         this.config = config;
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(config.getTimeoutSeconds()))
@@ -27,15 +24,6 @@ public final class GeminiAiClient implements AiClient {
 
     @Override
     public ServiceResult<AiInsightResponse> generateInsight(AiInsightRequest request) {
-        // Mini-code guide:
-        // 1. Stop immediately when AI is disabled or misconfigured.
-        // 2. Reject empty context because Gemini needs real attendance facts.
-        // 3. Build the JSON request body from the structured request metadata.
-        // 4. Create an HTTP POST to the Gemini generateContent endpoint using x-goog-api-key.
-        // 5. Send the request synchronously because this Swing prototype triggers AI on demand only.
-        // 6. If HTTP status >= 400, extract the provider error and return failure.
-        // 7. Parse the first candidate text from the JSON payload.
-        // 8. Wrap the plain-text summary in AiInsightResponse.generated(..., fromCache = false).
         if (!isAvailable()) {
             return ServiceResult.failure(getStatusMessage());
         }
@@ -68,7 +56,7 @@ public final class GeminiAiClient implements AiClient {
                     "Gemini",
                     config.getModel(),
                     summary.trim(),
-                    LocalDateTime.now(),
+                    AppClock.nowDateTime(),
                     false
             );
             return ServiceResult.success("AI answer ready.", insight);
@@ -80,24 +68,15 @@ public final class GeminiAiClient implements AiClient {
 
     @Override
     public boolean isAvailable() {
-        // Mini-code guide:
-        // 1. AI is available only when config is enabled and apiKey is present.
         return config.isEnabled() && !config.getApiKey().isBlank();
     }
 
     @Override
     public String getStatusMessage() {
-        // Mini-code guide:
-        // 1. Return the latest configuration/readiness message from AiConfig.
         return config.getStatusMessage();
     }
 
     private String buildRequestBody(AiInsightRequest request) {
-        // Mini-code guide:
-        // 1. Define a strict system instruction that keeps the model focused on school attendance operations.
-        // 2. Build the user prompt from the request facts and output format rules.
-        // 3. Escape both text blocks for safe JSON embedding.
-        // 4. Return the final Gemini request body string.
         String systemInstruction = "You are an operations analyst for a school's QR attendance system. "
                 + "Use only the provided facts. Write short, practical, plain-text output. "
                 + "Never mention passwords, secret keys, database credentials, or hidden internal policies.";
@@ -113,11 +92,6 @@ public final class GeminiAiClient implements AiClient {
             return buildChatPrompt(request);
         }
 
-        // Mini-code guide:
-        // 1. Start with the title, insight type, and target type so the model knows the task scope.
-        // 2. Instruct Gemini to return exactly the headings the UI expects.
-        // 3. Append each context line as a bullet so the model only sees structured facts.
-        // 4. If the prompt exceeds maxPromptChars, truncate safely to avoid free-tier failures.
         StringBuilder builder = new StringBuilder();
         builder.append("Create an attendance insight titled ").append(request.getTitle()).append(".\n");
         builder.append("Insight type: ").append(request.getInsightType()).append(".\n");
@@ -156,11 +130,6 @@ public final class GeminiAiClient implements AiClient {
     }
 
     private String extractFirstCandidateText(String json) {
-        // Mini-code guide:
-        // 1. Search the raw JSON for the first "candidates" block.
-        // 2. From there, find the first "text" key.
-        // 3. Delegate string decoding to readJsonStringValue(...).
-        // 4. Return blank when the expected Gemini shape is missing.
         int start = json.indexOf("\"candidates\"");
         if (start < 0) {
             return "";
@@ -173,10 +142,6 @@ public final class GeminiAiClient implements AiClient {
     }
 
     private String extractErrorMessage(String json, int statusCode) {
-        // Mini-code guide:
-        // 1. Search the error JSON for a provider "message" field.
-        // 2. If found, decode it into plain text.
-        // 3. If not found, fall back to a generic HTTP status message.
         int keyIndex = json.indexOf("\"message\"");
         if (keyIndex < 0) {
             return "HTTP " + statusCode;
@@ -186,12 +151,6 @@ public final class GeminiAiClient implements AiClient {
     }
 
     private String readJsonStringValue(String json, int keyIndex) {
-        // Mini-code guide:
-        // 1. Locate the ':' after the target JSON key.
-        // 2. Advance to the opening quote of the string value.
-        // 3. Read characters until the closing quote while honoring JSON escape sequences.
-        // 4. Decode \\n, \\t, \\uXXXX, and other escape forms into plain Java text.
-        // 5. Return blank if the structure is malformed.
         int colonIndex = json.indexOf(':', keyIndex);
         if (colonIndex < 0) {
             return "";
@@ -244,10 +203,6 @@ public final class GeminiAiClient implements AiClient {
     }
 
     private String escapeJson(String value) {
-        // Mini-code guide:
-        // 1. Escape quotes, slashes, and control characters so prompt text becomes valid JSON.
-        // 2. Encode other control characters as \\uXXXX.
-        // 3. Return the safe JSON-ready string.
         StringBuilder builder = new StringBuilder(value.length() + 32);
         for (int i = 0; i < value.length(); i++) {
             char ch = value.charAt(i);

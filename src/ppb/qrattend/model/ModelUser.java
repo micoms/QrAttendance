@@ -72,4 +72,14 @@ public class ModelUser {
     public boolean isTeacher() {
         return AppDomain.UserRole.TEACHER == role;
     }
+
+    private boolean mustChangePassword;
+
+    public boolean isMustChangePassword() {
+        return mustChangePassword;
+    }
+
+    public void setMustChangePassword(boolean v) {
+        mustChangePassword = v;
+    }
 }

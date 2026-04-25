@@ -6,7 +6,7 @@ import java.awt.GridLayout;
 import javax.swing.JFrame;
 import javax.swing.JPanel;
 import javax.swing.SwingUtilities;
-import ppb.qrattend.app.AppDataStore;
+import ppb.qrattend.app.AppStore;
 import ppb.qrattend.app.AppShell;
 import ppb.qrattend.component.login.PanelCover;
 import ppb.qrattend.component.login.PanelLogin;
@@ -16,7 +16,7 @@ import ppb.qrattend.model.ModelUser;
 
 public class Main extends JFrame {
 
-    private final AppDataStore store = new AppDataStore();
+    private final AppStore store = new AppStore();
     private final DatabaseAuthenticationService authenticationService = DatabaseAuthenticationService.fromDefaultConfig();
     private final CardLayout layout = new CardLayout();
     private final JPanel root = new JPanel(layout);

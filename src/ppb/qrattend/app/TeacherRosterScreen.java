@@ -1,15 +1,17 @@
 package ppb.qrattend.app;
 
 import java.awt.BorderLayout;
-import java.awt.GridLayout;
+import java.awt.FlowLayout;
+import java.util.List;
 import javax.swing.Box;
 import javax.swing.JButton;
 import javax.swing.JPanel;
 import javax.swing.JTable;
-import javax.swing.JTextArea;
+import javax.swing.JTextField;
 import javax.swing.table.DefaultTableModel;
-import ppb.qrattend.model.AppDomain;
-import ppb.qrattend.model.AppDomain.StudentProfile;
+import ppb.qrattend.model.CoreModels.RequestStatus;
+import ppb.qrattend.model.CoreModels.Student;
+import ppb.qrattend.model.CoreModels.StudentRemovalRequest;
 
 final class TeacherRosterScreen {
 
@@ -18,93 +20,91 @@ final class TeacherRosterScreen {
 
     static JPanel build(AppShell shell) {
         JPanel page = AppTheme.createPage();
-        page.add(buildClassListSection(shell));
+        page.add(buildStudentListSection(shell));
         page.add(Box.createVerticalStrut(16));
-        page.add(buildRemovalRequestSection(shell));
+        page.add(buildRequestHistory(shell));
         return page;
     }
 
-    private static JPanel buildClassListSection(AppShell shell) {
-        DefaultTableModel studentModel = shell.createTableModel("Student ID", "Full Name", "Section", "Email", "QR Email");
-        for (StudentProfile student : shell.getStore().getStudentsForTeacher(shell.getCurrentUser().getUserId())) {
-            studentModel.addRow(new Object[]{
-                student.getStudentId(),
-                student.getFullName(),
-                student.getSectionName(),
-                student.getEmail(),
-                student.getQrStatus().getLabel()
+    private static JPanel buildStudentListSection(AppShell shell) {
+        List<Student> students = shell.getStore().getStudentsForTeacher(shell.getCurrentUser().getUserId());
+        DefaultTableModel model = shell.createTableModel("Student ID", "Full Name", "Section", "Email", "QR");
+        for (Student student : students) {
+            model.addRow(new Object[]{
+                student.studentCode(),
+                student.fullName(),
+                student.sectionName(),
+                student.email(),
+                student.qrStatus().getLabel()
             });
         }
 
-        JTable table = new JTable(studentModel);
-        return shell.createSection("My class list", "These are the students currently in your class list.", shell.wrapTable(table));
-    }
-
-    private static JPanel buildRemovalRequestSection(AppShell shell) {
-        JTextArea reasonArea = shell.newTextArea();
-        reasonArea.setText("This student should be removed from my class list.");
-
-        DefaultTableModel studentModel = shell.createTableModel("Student ID", "Student", "Section");
-        for (StudentProfile student : shell.getStore().getStudentsForTeacher(shell.getCurrentUser().getUserId())) {
-            studentModel.addRow(new Object[]{
-                student.getStudentId(),
-                student.getFullName(),
-                student.getSectionName()
-            });
-        }
-        JTable table = new JTable(studentModel);
+        JTable table = new JTable(model);
+        JTextField reasonField = shell.newTextField();
+        reasonField.setText("The student is no longer in this class.");
 
         JButton requestButton = new JButton("Ask Admin");
-        AppTheme.styleDangerButton(requestButton);
+        AppTheme.stylePrimaryButton(requestButton);
         requestButton.addActionListener(event -> {
             int row = table.getSelectedRow();
-            if (row < 0) {
+            if (row < 0 || row >= students.size()) {
                 shell.showMessage("Choose a student first.", AppTheme.WARNING);
                 shell.refreshView();
                 return;
             }
-
-            shell.showResult(shell.getStore().requestStudentRemoval(
+            shell.showResult(shell.getStore().submitStudentRemovalRequest(
                     shell.getCurrentUser().getUserId(),
-                    (String) studentModel.getValueAt(row, 0),
-                    reasonArea.getText()
+                    students.get(row).id(),
+                    reasonField.getText()
             ));
             shell.refreshView();
         });
 
-        JPanel requestBody = new JPanel(new BorderLayout(0, 12));
-        requestBody.setOpaque(false);
-        requestBody.add(AppFlowPanels.createSimpleList("Need a student removed?", java.util.List.of(
-                "Choose the student from the list.",
-                "Write a short reason.",
-                "The admin must approve it first."
+        JPanel actions = new JPanel(new FlowLayout(FlowLayout.LEFT, 12, 0));
+        actions.setOpaque(false);
+        actions.add(shell.labeledField("Why does this student need to be removed?", reasonField));
+        actions.add(requestButton);
+
+        JPanel body = new JPanel(new BorderLayout(0, 12));
+        body.setOpaque(false);
+        body.add(AppFlowPanels.createSimpleList("What this page shows", List.of(
+                "Students appear here because their sections are in your saved schedule.",
+                "You cannot remove a student by yourself.",
+                "Use Ask Admin to send a removal request."
         )), BorderLayout.NORTH);
-        requestBody.add(shell.wrapTable(table), BorderLayout.CENTER);
+        body.add(shell.wrapTable(table), BorderLayout.CENTER);
+        body.add(actions, BorderLayout.SOUTH);
+        return shell.createSection("My Class List", "Choose a student if you need the admin to remove them from your class list.", body);
+    }
 
-        JPanel bottom = new JPanel(new GridLayout(1, 2, 12, 0));
-        bottom.setOpaque(false);
-        bottom.add(shell.labeledField("Reason", new javax.swing.JScrollPane(reasonArea)));
-        bottom.add(shell.labeledField("Action", requestButton));
-        requestBody.add(bottom, BorderLayout.SOUTH);
-
-        JPanel section = AppTheme.createPage();
-        section.add(shell.createSection("Ask admin to remove a student", "Use this when a student should no longer be in your class list.", requestBody));
-        section.add(Box.createVerticalStrut(16));
-
-        DefaultTableModel requestModel = shell.createTableModel("ID", "Student", "Section", "Reason", "Status", "Reviewed By");
-        for (AppDomain.StudentRemovalRequest request : shell.getStore().getStudentRemovalRequestsForTeacher(shell.getCurrentUser().getUserId())) {
-            requestModel.addRow(new Object[]{
-                request.getId(),
-                request.getStudentName(),
-                request.getSectionName(),
-                request.getReason(),
-                request.getStatus().getLabel(),
-                request.getReviewedBy() == null || request.getReviewedBy().isBlank() ? "-" : request.getReviewedBy()
+    private static JPanel buildRequestHistory(AppShell shell) {
+        DefaultTableModel model = shell.createTableModel("Student", "Section", "Reason", "Status", "Reviewed By");
+        for (StudentRemovalRequest request : shell.getStore().getStudentRemovalRequestsForTeacher(shell.getCurrentUser().getUserId())) {
+            model.addRow(new Object[]{
+                request.studentName(),
+                request.sectionName(),
+                request.reason(),
+                request.status().getLabel(),
+                request.reviewedBy().isBlank() ? "-" : request.reviewedBy()
             });
         }
 
-        section.add(shell.createSection("Your requests", "This shows if your request is still waiting, approved, or rejected.",
-                shell.wrapTable(new JTable(requestModel))));
-        return section;
+        JTable table = new JTable(model);
+        int pending = 0;
+        for (StudentRemovalRequest request : shell.getStore().getStudentRemovalRequestsForTeacher(shell.getCurrentUser().getUserId())) {
+            if (request.status() == RequestStatus.PENDING) {
+                pending++;
+            }
+        }
+
+        JPanel body = new JPanel(new BorderLayout(0, 12));
+        body.setOpaque(false);
+        body.add(AppFlowPanels.createSimpleList("Student Removal Requests", List.of(
+                "Pending requests: " + pending,
+                "Approved requests remove the student from the active class list.",
+                "Rejected requests stay in history so you can check what happened."
+        )), BorderLayout.NORTH);
+        body.add(shell.wrapTable(table), BorderLayout.CENTER);
+        return shell.createSection("Request History", "These are the student removal requests you already sent.", body);
     }
 }

@@ -18,7 +18,6 @@ import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import javax.swing.BorderFactory;
 import javax.swing.Box;
@@ -33,20 +32,17 @@ import javax.swing.JTable;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
 import javax.swing.ListSelectionModel;
+import javax.swing.Timer;
 import javax.swing.table.DefaultTableModel;
-import ppb.qrattend.model.AppDomain;
-import ppb.qrattend.model.AppDomain.AttendanceRecord;
-import ppb.qrattend.model.AppDomain.AttendanceSession;
-import ppb.qrattend.model.AppDomain.EmailDispatch;
-import ppb.qrattend.model.AppDomain.ScheduleChangeRequest;
 import ppb.qrattend.model.ModelUser;
 import ppb.qrattend.qr.QrScannerDialog;
 
 public class AppShell extends JPanel {
 
     private static final DateTimeFormatter TIME_INPUT_FORMAT = DateTimeFormatter.ofPattern("h:mm a");
+    private static final int DEFAULT_TEXT_FIELD_WIDTH = 220;
 
-    private final AppDataStore store;
+    private final AppStore store;
     private final ModelUser user;
     private final Runnable onLogout;
     private final Map<String, String> navigation = new LinkedHashMap<>();
@@ -56,15 +52,20 @@ public class AppShell extends JPanel {
     private final JLabel subtitleLabel = new JLabel();
     private final JPanel bannerPanel = new JPanel(new BorderLayout());
     private final JPanel contentHost = new JPanel(new CardLayout());
-    private final JPanel detailHost = new JPanel(new BorderLayout());
+    private final Timer attendanceTimer;
+
+    private Timer bannerClearTimer;
+    private boolean mustChangePassword;
 
     private String selectedView;
     private String bannerMessage = "";
     private Color bannerColor = AppTheme.INFO;
-    private String reportSubjectFilter = "All Subjects";
-    private String reportPreview = "";
 
-    public AppShell(AppDataStore store, ModelUser user, Runnable onLogout) {
+    private Integer reportTeacherFilter;
+    private Integer reportSectionFilter;
+    private Integer reportSubjectFilter;
+
+    public AppShell(AppStore store, ModelUser user, Runnable onLogout) {
         this.store = store;
         this.user = user;
         this.onLogout = onLogout;
@@ -74,24 +75,36 @@ public class AppShell extends JPanel {
         buildNavigation();
         buildLayout();
         store.addListener(this::refreshSelectedView);
-        selectedView = navigation.keySet().iterator().next();
+        selectedView = "home";
+        mustChangePassword = user.isMustChangePassword();
+        if (mustChangePassword) {
+            selectedView = "password_change";
+        }
+        // Refresh the attendance page every 30 seconds so it can open the teacher's
+        // current class as soon as the saved class time starts.
+        attendanceTimer = new Timer(30000, event -> {
+            if ("attendance".equals(selectedView)) {
+                refreshSelectedView();
+            }
+        });
+        attendanceTimer.start();
         refreshSelectedView();
     }
 
     private void buildNavigation() {
         navigation.clear();
+        navigation.put("home", "Home");
         if (user.isAdmin()) {
-            navigation.put("dashboard", "Home");
-            navigation.put("teachers", "Add Teacher");
+            navigation.put("teachers", "Teachers");
+            navigation.put("setup", "School Lists");
             navigation.put("students", "Students");
-            navigation.put("schedules", "Set Schedule");
+            navigation.put("schedules", "Schedule");
             navigation.put("requests", "Requests");
             navigation.put("reports", "Reports");
         } else {
-            navigation.put("dashboard", "Home");
-            navigation.put("attendance", "Start Attendance");
+            navigation.put("attendance", "Attendance");
             navigation.put("students", "Class List");
-            navigation.put("schedule", "Schedule Help");
+            navigation.put("schedule", "My Schedule");
             navigation.put("reports", "Reports");
         }
     }
@@ -99,7 +112,6 @@ public class AppShell extends JPanel {
     private void buildLayout() {
         add(buildSidebar(), BorderLayout.WEST);
         add(buildMainPane(), BorderLayout.CENTER);
-        add(buildDetailPane(), BorderLayout.EAST);
     }
 
     private JComponent buildSidebar() {
@@ -115,72 +127,58 @@ public class AppShell extends JPanel {
             }
         };
         sidebar.setOpaque(false);
-        sidebar.setPreferredSize(new Dimension(232, 0));
-        sidebar.setBorder(BorderFactory.createEmptyBorder(24, 18, 20, 18));
+        sidebar.setPreferredSize(new Dimension(210, 0));
+        sidebar.setBorder(BorderFactory.createEmptyBorder(22, 16, 22, 16));
         sidebar.setLayout(new BoxLayout(sidebar, BoxLayout.Y_AXIS));
 
         JLabel brand = new JLabel("QR Attend");
-        brand.setFont(AppTheme.headlineFont(22));
+        brand.setFont(AppTheme.headlineFont(24));
         brand.setForeground(Color.WHITE);
-        brand.setAlignmentX(Component.LEFT_ALIGNMENT);
         sidebar.add(brand);
         sidebar.add(Box.createVerticalStrut(4));
 
-        JLabel subtitle = new JLabel("Easy school attendance");
-        subtitle.setFont(AppTheme.bodyFont(11));
-        subtitle.setForeground(new Color(168, 205, 181));
-        subtitle.setAlignmentX(Component.LEFT_ALIGNMENT);
-        sidebar.add(subtitle);
+        JLabel sub = new JLabel("Simple school attendance");
+        sub.setFont(AppTheme.bodyFont(11));
+        sub.setForeground(new Color(190, 222, 198));
+        sidebar.add(sub);
         sidebar.add(Box.createVerticalStrut(18));
 
-        JLabel pill = AppTheme.createPill(user.getRole().getLabel(), new Color(255, 255, 255, 28), new Color(220, 240, 228));
-        pill.setAlignmentX(Component.LEFT_ALIGNMENT);
-        sidebar.add(pill);
-        sidebar.add(Box.createVerticalStrut(6));
-
-        JLabel nameTag = new JLabel(user.getFullName());
-        nameTag.setFont(AppTheme.bodyFont(12));
-        nameTag.setForeground(new Color(200, 225, 210));
-        nameTag.setAlignmentX(Component.LEFT_ALIGNMENT);
-        sidebar.add(nameTag);
-        sidebar.add(Box.createVerticalStrut(22));
-
-        JLabel navSection = new JLabel("QUICK MENU");
-        navSection.setFont(AppTheme.bodyFont(10));
-        navSection.setForeground(new Color(130, 170, 150));
-        navSection.setAlignmentX(Component.LEFT_ALIGNMENT);
-        sidebar.add(navSection);
+        JLabel role = AppTheme.createPill(user.getRole().getLabel(), new Color(255, 255, 255, 28), new Color(220, 240, 228));
+        role.setAlignmentX(Component.LEFT_ALIGNMENT);
+        sidebar.add(role);
         sidebar.add(Box.createVerticalStrut(8));
+
+        JLabel name = new JLabel(user.getFullName());
+        name.setFont(AppTheme.bodyFont(12));
+        name.setForeground(new Color(217, 235, 222));
+        sidebar.add(name);
+        sidebar.add(Box.createVerticalStrut(18));
 
         for (Map.Entry<String, String> entry : navigation.entrySet()) {
             JButton button = new JButton(entry.getValue());
             button.setAlignmentX(Component.LEFT_ALIGNMENT);
             button.setMaximumSize(new Dimension(Integer.MAX_VALUE, 42));
-            button.addActionListener(event -> {
-                selectedView = entry.getKey();
-                refreshSelectedView();
-            });
+            button.addActionListener(event -> openView(entry.getKey()));
             navButtons.put(entry.getKey(), button);
             sidebar.add(button);
-            sidebar.add(Box.createVerticalStrut(4));
+            sidebar.add(Box.createVerticalStrut(6));
         }
 
         sidebar.add(Box.createVerticalGlue());
 
-        JPanel divider = new JPanel();
-        divider.setOpaque(false);
-        divider.setMaximumSize(new Dimension(Integer.MAX_VALUE, 1));
-        divider.setBackground(new Color(255, 255, 255, 30));
-        divider.setBorder(BorderFactory.createMatteBorder(1, 0, 0, 0, new Color(255, 255, 255, 30)));
-        divider.setAlignmentX(Component.LEFT_ALIGNMENT);
-        sidebar.add(divider);
-        sidebar.add(Box.createVerticalStrut(14));
-
         JButton logout = new JButton("Sign Out");
-        logout.setAlignmentX(Component.LEFT_ALIGNMENT);
         logout.setMaximumSize(new Dimension(Integer.MAX_VALUE, 42));
         AppTheme.styleNavButton(logout, false);
-        logout.addActionListener(event -> onLogout.run());
+        logout.addActionListener(event -> {
+            // Stop the refresh timer before handing control back to the login screen.
+            // Without this, multiple timers accumulate across login/logout cycles.
+            attendanceTimer.stop();
+            if (bannerClearTimer != null) {
+                bannerClearTimer.stop();
+                bannerClearTimer = null;
+            }
+            onLogout.run();
+        });
         sidebar.add(logout);
         return sidebar;
     }
@@ -188,7 +186,7 @@ public class AppShell extends JPanel {
     private JComponent buildMainPane() {
         JPanel panel = new JPanel(new BorderLayout());
         panel.setOpaque(false);
-        panel.setBorder(BorderFactory.createEmptyBorder(24, 24, 24, 16));
+        panel.setBorder(BorderFactory.createEmptyBorder(24, 24, 24, 24));
         panel.add(buildHeader(), BorderLayout.NORTH);
         panel.add(contentHost, BorderLayout.CENTER);
         return panel;
@@ -199,231 +197,283 @@ public class AppShell extends JPanel {
         header.setOpaque(false);
         header.setBorder(BorderFactory.createEmptyBorder(0, 0, 18, 0));
 
-        JPanel textBlock = new JPanel();
-        textBlock.setOpaque(false);
-        textBlock.setLayout(new BoxLayout(textBlock, BoxLayout.Y_AXIS));
-        titleLabel.setFont(AppTheme.headlineFont(28));
+        JPanel text = new JPanel();
+        text.setOpaque(false);
+        text.setLayout(new BoxLayout(text, BoxLayout.Y_AXIS));
+
+        titleLabel.setFont(AppTheme.headlineFont(30));
         titleLabel.setForeground(AppTheme.TEXT_PRIMARY);
         subtitleLabel.setFont(AppTheme.bodyFont(13));
         subtitleLabel.setForeground(AppTheme.TEXT_MUTED);
-        textBlock.add(titleLabel);
-        textBlock.add(Box.createVerticalStrut(3));
-        textBlock.add(subtitleLabel);
-        header.add(textBlock, BorderLayout.NORTH);
+
+        text.add(titleLabel);
+        text.add(Box.createVerticalStrut(4));
+        text.add(subtitleLabel);
+        header.add(text, BorderLayout.NORTH);
 
         bannerPanel.setOpaque(false);
         header.add(bannerPanel, BorderLayout.SOUTH);
         return header;
     }
 
-    private JComponent buildDetailPane() {
-        JPanel wrapper = new JPanel(new BorderLayout());
-        wrapper.setPreferredSize(new Dimension(300, 0));
-        wrapper.setBorder(BorderFactory.createEmptyBorder(24, 0, 24, 20));
-        wrapper.setOpaque(false);
-        wrapper.add(detailHost, BorderLayout.CENTER);
-        return wrapper;
-    }
-
     private void refreshSelectedView() {
-        updateNavigationStyles();
+        updateNav();
         updateHeader();
         updateBanner();
         contentHost.removeAll();
-        contentHost.add(AppTheme.wrapScrollable(buildViewContent()), "selected");
+        contentHost.add(AppTheme.wrapScrollable(buildView()), "selected");
         ((CardLayout) contentHost.getLayout()).show(contentHost, "selected");
-        refreshDetailPane();
         revalidate();
         repaint();
     }
 
-    private void updateNavigationStyles() {
+    private void updateNav() {
         for (Map.Entry<String, JButton> entry : navButtons.entrySet()) {
             AppTheme.styleNavButton(entry.getValue(), entry.getKey().equals(selectedView));
         }
     }
 
     private void updateHeader() {
-        String title;
-        String subtitle;
-        switch (selectedView) {
-            case "dashboard" -> {
-                title = "Home";
-                subtitle = user.isAdmin()
-                        ? "Pick the next task you want to do."
-                        : "Pick what you want to do next.";
-            }
-            case "teachers" -> {
-                title = "Teachers";
-                subtitle = "Add a teacher or send the password again.";
-            }
-            case "students" -> {
-                title = user.isAdmin() ? "Students" : "Class List";
-                subtitle = user.isAdmin()
-                        ? "Add students, pick the section, and send the QR code."
-                        : "Check your students and ask the admin for help if needed.";
-            }
-            case "schedules" -> {
-                title = "Class Schedule";
-                subtitle = "Set class days and times.";
-            }
-            case "requests" -> {
-                title = "Requests";
-                subtitle = "Check requests that still need a decision.";
-            }
-            case "attendance" -> {
-                title = "Take Attendance";
-                subtitle = "Start class, scan QR, and use help only if needed.";
-            }
-            case "schedule" -> {
-                title = "My Schedule";
-                subtitle = "Check your schedule and ask for a change if needed.";
-            }
-            case "reports" -> {
-                title = "Reports";
-                subtitle = "Check the summary and ask AI if something needs attention.";
-            }
-            default -> {
-                title = "Home";
-                subtitle = "Pick the next task you want to do.";
-            }
+        if ("home".equals(selectedView)) {
+            titleLabel.setText("Home");
+            subtitleLabel.setText(user.isAdmin()
+                    ? "Pick the next school setup task."
+                    : "Pick what you want to do next.");
+        } else if ("teachers".equals(selectedView)) {
+            titleLabel.setText("Teachers");
+            subtitleLabel.setText("Add teachers and resend password emails.");
+        } else if ("setup".equals(selectedView)) {
+            titleLabel.setText("School Lists");
+            subtitleLabel.setText("Save school lists once, then reuse them everywhere.");
+        } else if ("students".equals(selectedView)) {
+            titleLabel.setText(user.isAdmin() ? "Students" : "My Class List");
+            subtitleLabel.setText(user.isAdmin()
+                    ? "Import students by section or add one student at a time."
+                    : "These students come from the sections in your schedule.");
+        } else if ("schedules".equals(selectedView)) {
+            titleLabel.setText("Schedule");
+            subtitleLabel.setText("Build classes using saved teachers, sections, subjects, and rooms.");
+        } else if ("attendance".equals(selectedView)) {
+            titleLabel.setText("Attendance");
+            subtitleLabel.setText("Scan QR first. If that fails, click the student name.");
+        } else if ("schedule".equals(selectedView)) {
+            titleLabel.setText("My Schedule");
+            subtitleLabel.setText("Check your classes and ask for changes when needed.");
+        } else if ("requests".equals(selectedView)) {
+            titleLabel.setText("Requests");
+            subtitleLabel.setText("Check pending requests first.");
+        } else if ("reports".equals(selectedView)) {
+            titleLabel.setText("Reports");
+            subtitleLabel.setText("Read the summary, then ask AI if you need help.");
+        } else {
+            titleLabel.setText("QR Attend");
+            subtitleLabel.setText("");
         }
-        titleLabel.setText(title);
-        subtitleLabel.setText(subtitle);
     }
 
     private void updateBanner() {
         bannerPanel.removeAll();
-        if (bannerMessage == null || bannerMessage.isBlank()) {
+        if (bannerMessage.isBlank()) {
             return;
         }
-
-        JPanel bannerCard = new AppTheme.RoundedPanel(AppTheme.RADIUS_SM, bannerColor);
-        bannerCard.setLayout(new BorderLayout());
+        JPanel banner = new AppTheme.RoundedPanel(AppTheme.RADIUS_SM, bannerColor);
+        banner.setLayout(new BorderLayout());
         JLabel label = new JLabel("  " + bannerMessage);
-        label.setOpaque(false);
         label.setForeground(Color.WHITE);
         label.setFont(AppTheme.bodyFont(13));
-        label.setBorder(BorderFactory.createEmptyBorder(10, 14, 10, 14));
-        bannerCard.add(label, BorderLayout.CENTER);
-        bannerPanel.add(bannerCard, BorderLayout.CENTER);
+        label.setBorder(BorderFactory.createEmptyBorder(10, 12, 10, 12));
+        banner.add(label, BorderLayout.CENTER);
+        bannerPanel.add(banner, BorderLayout.CENTER);
     }
 
-    private JPanel buildViewContent() {
-        return switch (selectedView) {
-            case "dashboard" -> user.isAdmin() ? AdminDashboardScreen.build(this) : TeacherDashboardScreen.build(this);
-            case "teachers" -> TeachersScreen.build(this);
-            case "students" -> user.isAdmin() ? AdminStudentsScreen.build(this) : TeacherRosterScreen.build(this);
-            case "schedules" -> AdminSchedulesScreen.build(this);
-            case "requests" -> RequestsScreen.build(this);
-            case "attendance" -> AttendanceScreen.build(this);
-            case "schedule" -> TeacherScheduleScreen.build(this);
-            case "reports" -> ReportsScreen.build(this);
-            default -> user.isAdmin() ? AdminDashboardScreen.build(this) : TeacherDashboardScreen.build(this);
-        };
-    }
-
-    private void refreshDetailPane() {
-        detailHost.removeAll();
-
-        JPanel panel = new AppTheme.RoundedPanel(AppTheme.RADIUS_MD, AppTheme.SURFACE);
-        panel.setBorder(BorderFactory.createCompoundBorder(
-                new AppTheme.RoundedBorder(AppTheme.RADIUS_MD, AppTheme.BORDER, 1),
-                BorderFactory.createEmptyBorder(20, 18, 18, 18)
-        ));
-        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
-
-        panel.add(detailBlock("Your account", List.of(
-                user.getFullName(),
-                user.getEmail(),
-                user.getRole().getLabel()
-        )));
-        panel.add(Box.createVerticalStrut(16));
-
-        if ("dashboard".equals(selectedView)) {
-            panel.add(user.isAdmin() ? buildAdminHomeDetails() : buildTeacherHomeDetails());
+    private JPanel buildView() {
+        if ("password_change".equals(selectedView)) {
+            return PasswordChangeScreen.build(this);
+        }
+        if ("home".equals(selectedView)) {
+            return user.isAdmin() ? AdminDashboardScreen.build(this) : TeacherDashboardScreen.build(this);
+        } else if ("teachers".equals(selectedView)) {
+            return TeachersScreen.build(this);
+        } else if ("setup".equals(selectedView)) {
+            return SectionsScreen.build(this);
+        } else if ("students".equals(selectedView)) {
+            return user.isAdmin() ? AdminStudentsScreen.build(this) : TeacherRosterScreen.build(this);
+        } else if ("schedules".equals(selectedView)) {
+            return AdminSchedulesScreen.build(this);
         } else if ("attendance".equals(selectedView)) {
-            panel.add(buildAttendanceHelpDetails());
+            return AttendanceScreen.build(this);
+        } else if ("schedule".equals(selectedView)) {
+            return TeacherScheduleScreen.build(this);
         } else if ("requests".equals(selectedView)) {
-            panel.add(buildPendingRequestDetails());
+            return RequestsScreen.build(this);
         } else if ("reports".equals(selectedView)) {
-            panel.add(buildReportsHelpDetails());
-        } else if (user.isTeacher()) {
-            AttendanceSession session = store.getSessionForTeacher(user.getUserId());
-            panel.add(detailBlock("What to do next", List.of(
-                    "Current class: " + session.getSubjectName(),
-                    "Class status: " + session.getState().getLabel(),
-                    "Open the page on the left, then finish one task at a time."
-            )));
+            return ReportsScreen.build(this);
         } else {
-            panel.add(detailBlock("What to do next", List.of(
-                    "Open one page from the left menu.",
-                    "Finish the main task at the top of that page.",
-                    "Check the banner at the top after you save."
-            )));
+            return user.isAdmin() ? AdminDashboardScreen.build(this) : TeacherDashboardScreen.build(this);
         }
-        panel.add(Box.createVerticalStrut(16));
-
-        List<String> recentEmailLines = new ArrayList<>();
-        for (EmailDispatch dispatch : store.getRecentEmailDispatches(4)) {
-            recentEmailLines.add(dispatch.getRecipient() + " | " + dispatch.getStatus().getLabel());
-        }
-        panel.add(detailBlock("Recent updates", recentEmailLines.isEmpty() ? List.of("No email updates yet.") : recentEmailLines));
-        panel.add(Box.createVerticalStrut(16));
-
-        if ("attendance".equals(selectedView) || "reports".equals(selectedView) || "dashboard".equals(selectedView)) {
-            List<String> attendanceLines = new ArrayList<>();
-            for (AttendanceRecord record : store.getRecentAttendanceRecords(4, user.isTeacher() ? user.getUserId() : null)) {
-                attendanceLines.add(record.getStudentName() + " | " + record.getSubjectName() + " | " + record.getSource().getLabel());
-            }
-            panel.add(detailBlock("Recent attendance", attendanceLines.isEmpty() ? List.of("No attendance yet.") : attendanceLines));
-        } else if ("schedule".equals(selectedView) || "students".equals(selectedView)) {
-            List<String> requestLines = new ArrayList<>();
-            List<ScheduleChangeRequest> requests = user.isAdmin()
-                    ? store.getScheduleRequests()
-                    : store.getScheduleRequestsForTeacher(user.getUserId());
-            for (int index = 0; index < Math.min(4, requests.size()); index++) {
-                ScheduleChangeRequest request = requests.get(index);
-                requestLines.add("#" + request.getId() + " | " + request.getStatus().getLabel() + " | " + request.getRequester());
-            }
-            panel.add(detailBlock("Recent requests", requestLines.isEmpty() ? List.of("No request updates yet.") : requestLines));
-        }
-
-        detailHost.add(panel, BorderLayout.CENTER);
     }
 
-    void showMessage(String message, Color color) {
-        bannerMessage = message;
-        bannerColor = color;
+    public void openView(String viewKey) {
+        if (mustChangePassword) {
+            return;  // block all navigation until password is changed
+        }
+        if (!navigation.containsKey(viewKey)) {
+            return;
+        }
+        selectedView = viewKey;
+        refreshSelectedView();
     }
 
-    void showResult(AppDataStore.ActionResult result) {
+    public void onPasswordChanged() {
+        mustChangePassword = false;
+        selectedView = "home";
+        refreshSelectedView();
+    }
+
+    public void showMessage(String message, Color color) {
+        bannerMessage = message == null ? "" : message.trim();
+        bannerColor = color == null ? AppTheme.INFO : color;
+
+        if (bannerClearTimer != null) {
+            bannerClearTimer.stop();
+            bannerClearTimer = null;
+        }
+
+        if (!bannerMessage.isBlank()) {
+            bannerClearTimer = new Timer(4000, event -> {
+                bannerMessage = "";
+                bannerClearTimer = null;
+                updateBanner();
+                revalidate();
+                repaint();
+            });
+            bannerClearTimer.setRepeats(false);
+            bannerClearTimer.start();
+        }
+    }
+
+    public void showResult(AppStore.ActionResult result) {
         if (result == null) {
             return;
         }
-        if (result.isWarning()) {
-            showMessage(result.getMessage(), AppTheme.WARNING);
-        } else if (result.isSuccess()) {
+        if (result.isSuccess()) {
             showMessage(result.getMessage(), AppTheme.SUCCESS);
+        } else if (result.isWarning()) {
+            String full = result.getDetail().isBlank()
+                    ? result.getMessage()
+                    : result.getMessage() + " " + result.getDetail();
+            showMessage(full, AppTheme.WARNING);
         } else {
             showMessage(result.getMessage(), AppTheme.DANGER);
         }
     }
 
-    JPanel createSection(String title, String subtitle, JComponent body) {
+    public void refreshView() {
+        refreshSelectedView();
+    }
+
+    public JPanel createSection(String title, String subtitle, JComponent body) {
         JPanel section = AppTheme.createSection(title, subtitle);
         section.add(body, BorderLayout.CENTER);
         return section;
     }
 
-    JPanel createTeacherAssistantSection(String scopeKey, String title, String subtitle, String suggestedQuestion) {
+    public JPanel createMetricsRow(JPanel... cards) {
+        JPanel row = new JPanel(new GridLayout(1, cards.length, 14, 0));
+        row.setOpaque(false);
+        for (JPanel card : cards) {
+            row.add(card);
+        }
+        return row;
+    }
+
+    public JPanel wrapTable(JTable table) {
+        table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        AppTheme.styleTable(table);
+        JPanel body = new JPanel(new BorderLayout());
+        body.setOpaque(false);
+        body.add(AppTheme.wrapScrollable(table), BorderLayout.CENTER);
+        return body;
+    }
+
+    public DefaultTableModel createTableModel(String... headers) {
+        return new DefaultTableModel(headers, 0) {
+            @Override
+            public boolean isCellEditable(int row, int column) {
+                return false;
+            }
+        };
+    }
+
+    public JPanel labeledField(String labelText, JComponent input) {
+        JPanel group = new JPanel();
+        group.setOpaque(false);
+        group.setLayout(new BoxLayout(group, BoxLayout.Y_AXIS));
+        JLabel label = new JLabel(labelText);
+        label.setFont(AppTheme.bodyFont(12));
+        label.setForeground(AppTheme.TEXT_MUTED);
+        group.add(label);
+        group.add(Box.createVerticalStrut(6));
+        group.add(input);
+        return group;
+    }
+
+    public JTextField newTextField() {
+        JTextField field = new JTextField();
+        field.setColumns(18);
+        AppTheme.styleField(field);
+        Dimension size = field.getPreferredSize();
+        field.setPreferredSize(new Dimension(DEFAULT_TEXT_FIELD_WIDTH, size.height));
+        field.setMinimumSize(new Dimension(140, size.height));
+        return field;
+    }
+
+    public JTextArea newTextArea() {
+        JTextArea area = new JTextArea(5, 18);
+        AppTheme.styleTextArea(area);
+        return area;
+    }
+
+    public JComboBox<String> newTimeCombo() {
+        List<String> timeOptions = buildTimeOptions();
+        String[] timeArray = new String[timeOptions.size()];
+        for (int i = 0; i < timeOptions.size(); i++) {
+            timeArray[i] = timeOptions.get(i);
+        }
+        JComboBox<String> combo = new JComboBox<>(timeArray);
+        AppTheme.styleCombo(combo);
+        return combo;
+    }
+
+    public JComboBox<DayOfWeek> newDayCombo() {
+        JComboBox<DayOfWeek> combo = new JComboBox<>(DayOfWeek.values());
+        AppTheme.styleCombo(combo);
+        return combo;
+    }
+
+    public LocalTime parseTime(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return LocalTime.parse(value, TIME_INPUT_FORMAT);
+        } catch (DateTimeParseException ex) {
+            return null;
+        }
+    }
+
+    public void openQrScannerFor(JTextField targetField) {
+        QrScannerDialog.open(this, targetField::setText);
+    }
+
+    public JPanel createTeacherAiPanel(String scopeKey, String subtitle, String questionHint) {
         JTextArea conversationArea = newTextArea();
         conversationArea.setEditable(false);
-        conversationArea.setText(store.getTeacherAssistantConversation(user.getUserId(), scopeKey));
+        conversationArea.setText(store.getAiConversation(user.getUserId(), scopeKey));
 
         JTextArea questionArea = newTextArea();
-        questionArea.setRows(4);
-        questionArea.setText(suggestedQuestion);
+        questionArea.setRows(3);
+        questionArea.setText(questionHint);
 
         JButton askButton = new JButton("Ask AI");
         JButton clearButton = new JButton("Clear");
@@ -431,11 +481,11 @@ public class AppShell extends JPanel {
         AppTheme.styleSecondaryButton(clearButton);
 
         askButton.addActionListener(event -> {
-            showResult(store.askTeacherAssistant(user.getUserId(), scopeKey, questionArea.getText()));
+            showResult(store.askAi(user.getUserId(), scopeKey, questionArea.getText()));
             refreshView();
         });
         clearButton.addActionListener(event -> {
-            showResult(store.clearTeacherAssistantConversation(user.getUserId(), scopeKey));
+            showResult(store.clearAiConversation(user.getUserId(), scopeKey));
             refreshView();
         });
 
@@ -447,142 +497,44 @@ public class AppShell extends JPanel {
         JPanel body = new JPanel(new BorderLayout(0, 12));
         body.setOpaque(false);
         body.add(new JScrollPane(conversationArea), BorderLayout.CENTER);
-
-        JPanel promptArea = new JPanel(new BorderLayout(0, 12));
-        promptArea.setOpaque(false);
-        promptArea.add(labeledField("Ask AI", new JScrollPane(questionArea)), BorderLayout.CENTER);
-        promptArea.add(actions, BorderLayout.SOUTH);
-        body.add(promptArea, BorderLayout.SOUTH);
-        return createSection(title, subtitle, body);
+        body.add(AppTheme.stack(new JScrollPane(questionArea), actions), BorderLayout.SOUTH);
+        return createSection("Ask AI", subtitle, body);
     }
 
-    String friendlyStatus(String value) {
-        if (value == null || value.isBlank()) {
-            return "-";
-        }
-        return switch (value.trim().toUpperCase(Locale.ENGLISH)) {
-            case "ACTIVE" -> "Active";
-            case "APPROVED" -> "Approved";
-            case "INACTIVE" -> "Inactive";
-            default -> value;
-        };
+    public String friendlyYesNo(boolean value) {
+        return value ? "Yes" : "No";
     }
 
-    JPanel wrapTable(JTable table) {
-        table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
-        AppTheme.styleTable(table);
-        JPanel body = new JPanel(new BorderLayout());
-        body.setOpaque(false);
-        body.add(AppTheme.wrapScrollable(table), BorderLayout.CENTER);
-        return body;
-    }
-
-    JPanel createMetricsRow(JPanel... cards) {
-        JPanel row = new JPanel(new GridLayout(1, cards.length, 14, 0));
-        row.setOpaque(false);
-        for (JPanel card : cards) {
-            row.add(card);
-        }
-        return row;
-    }
-
-    DefaultTableModel createTableModel(String... headers) {
-        return new DefaultTableModel(headers, 0) {
-            @Override
-            public boolean isCellEditable(int row, int column) {
-                return false;
-            }
-        };
-    }
-
-    JPanel labeledField(String labelText, JComponent input) {
-        JPanel group = new JPanel();
-        group.setOpaque(false);
-        group.setLayout(new BoxLayout(group, BoxLayout.Y_AXIS));
-
-        JLabel label = new JLabel(labelText);
-        label.setFont(AppTheme.bodyFont(12));
-        label.setForeground(AppTheme.TEXT_MUTED);
-        group.add(label);
-        group.add(Box.createVerticalStrut(6));
-        group.add(input);
-        return group;
-    }
-
-    JTextField newTextField() {
-        JTextField field = new JTextField();
-        AppTheme.styleField(field);
-        return field;
-    }
-
-    JTextArea newTextArea() {
-        JTextArea area = new JTextArea(4, 18);
-        AppTheme.styleTextArea(area);
-        return area;
-    }
-
-    JComboBox<String> newTimeCombo() {
-        JComboBox<String> combo = new JComboBox<>(buildTimeOptions().toArray(String[]::new));
-        AppTheme.styleCombo(combo);
-        return combo;
-    }
-
-    JComboBox<DayOfWeek> newDayCombo() {
-        JComboBox<DayOfWeek> combo = new JComboBox<>(DayOfWeek.values());
-        AppTheme.styleCombo(combo);
-        return combo;
-    }
-
-    LocalTime parseTimeValue(String value) {
-        try {
-            return LocalTime.parse(value, TIME_INPUT_FORMAT);
-        } catch (DateTimeParseException ex) {
-            return null;
-        }
-    }
-
-    void openQrScannerFor(JTextField qrField) {
-        QrScannerDialog.open(this, qrValue -> {
-            qrField.setText(qrValue);
-            showResult(store.markAttendanceFromQr(user.getUserId(), qrValue));
-            refreshView();
-        });
-    }
-
-    AppDataStore getStore() {
+    public AppStore getStore() {
         return store;
     }
 
-    ModelUser getCurrentUser() {
+    public ModelUser getCurrentUser() {
         return user;
     }
 
-    String getReportSubjectFilter() {
+    public Integer getReportTeacherFilter() {
+        return reportTeacherFilter;
+    }
+
+    public void setReportTeacherFilter(Integer reportTeacherFilter) {
+        this.reportTeacherFilter = reportTeacherFilter;
+    }
+
+    public Integer getReportSectionFilter() {
+        return reportSectionFilter;
+    }
+
+    public void setReportSectionFilter(Integer reportSectionFilter) {
+        this.reportSectionFilter = reportSectionFilter;
+    }
+
+    public Integer getReportSubjectFilter() {
         return reportSubjectFilter;
     }
 
-    void setReportSubjectFilter(String reportSubjectFilter) {
-        this.reportSubjectFilter = reportSubjectFilter == null ? "All Subjects" : reportSubjectFilter;
-    }
-
-    String getReportPreview() {
-        return reportPreview;
-    }
-
-    void setReportPreview(String reportPreview) {
-        this.reportPreview = reportPreview == null ? "" : reportPreview;
-    }
-
-    void refreshView() {
-        refreshSelectedView();
-    }
-
-    void openView(String viewKey) {
-        if (viewKey == null || !navigation.containsKey(viewKey)) {
-            return;
-        }
-        selectedView = viewKey;
-        refreshSelectedView();
+    public void setReportSubjectFilter(Integer reportSubjectFilter) {
+        this.reportSubjectFilter = reportSubjectFilter;
     }
 
     private List<String> buildTimeOptions() {
@@ -593,68 +545,5 @@ public class AppShell extends JPanel {
             time = time.plusMinutes(30);
         }
         return values;
-    }
-
-    private JPanel detailBlock(String title, List<String> lines) {
-        JPanel block = new JPanel();
-        block.setOpaque(false);
-        block.setLayout(new BoxLayout(block, BoxLayout.Y_AXIS));
-
-        JLabel heading = new JLabel(title.toUpperCase(Locale.ENGLISH));
-        heading.setFont(AppTheme.bodyFont(10));
-        heading.setForeground(AppTheme.TEXT_MUTED);
-        block.add(heading);
-        block.add(Box.createVerticalStrut(8));
-
-        for (String line : lines) {
-            JLabel value = new JLabel("<html>" + line + "</html>");
-            value.setFont(AppTheme.bodyFont(12));
-            value.setForeground(AppTheme.TEXT_PRIMARY);
-            block.add(value);
-            block.add(Box.createVerticalStrut(4));
-        }
-        return block;
-    }
-
-    private JPanel buildAdminHomeDetails() {
-        return detailBlock("What to do next", List.of(
-                "1. Add a teacher",
-                "2. Add students to a class",
-                "3. Set the class schedule",
-                "4. Check requests that need approval"
-        ));
-    }
-
-    private JPanel buildTeacherHomeDetails() {
-        return detailBlock("What to do next", List.of(
-                "1. Start attendance",
-                "2. Scan student QR codes",
-                "3. Use help only if QR does not work",
-                "4. Check your report if something looks wrong"
-        ));
-    }
-
-    private JPanel buildAttendanceHelpDetails() {
-        return detailBlock("Need help?", List.of(
-                "If the class is already open, go straight to scan.",
-                "If there is no class open, start a temporary class first.",
-                "Use 'Mark Without QR' only when scanning is not possible."
-        ));
-    }
-
-    private JPanel buildPendingRequestDetails() {
-        return detailBlock("What matters first", List.of(
-                "Check the pending requests first.",
-                "Approve only if the request is correct.",
-                "Rejected requests stay in the history for reference."
-        ));
-    }
-
-    private JPanel buildReportsHelpDetails() {
-        return detailBlock("How to use this page", List.of(
-                "Pick one subject if you want a smaller report.",
-                "Refresh the report after changing the filter.",
-                "Ask AI if you want the page explained in plain language."
-        ));
     }
 }

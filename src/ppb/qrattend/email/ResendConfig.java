@@ -21,9 +21,6 @@ public final class ResendConfig {
 
     private ResendConfig(boolean enabled, String provider, String apiKey, String fromEmail, String fromName,
             String replyTo, String apiBaseUrl, int timeoutSeconds, Path sourcePath, String statusMessage) {
-        // Mini-code guide:
-        // 1. Keep one immutable snapshot of the mail settings.
-        // 2. This object can then be shared by the Resend client and teacher service safely.
         this.enabled = enabled;
         this.provider = provider;
         this.apiKey = apiKey;
@@ -37,16 +34,10 @@ public final class ResendConfig {
     }
 
     public static ResendConfig loadDefault() {
-        // Mini-code guide:
-        // 1. Reuse config/database.properties as the shared settings file.
         return load(Path.of("config", "database.properties"));
     }
 
     public static ResendConfig load(Path path) {
-        // Mini-code guide:
-        // 1. If the file does not exist, keep email delivery disabled with a setup message.
-        // 2. Load the config keys for the Resend provider.
-        // 3. Validate provider/api key/from address and return a safe immutable config.
         if (!Files.exists(path)) {
             return new ResendConfig(false, "resend", "", "", "QR Attend", "",
                     "https://api.resend.com", 20, path,
@@ -89,8 +80,6 @@ public final class ResendConfig {
     }
 
     private static int parseInt(String value, int defaultValue) {
-        // Mini-code guide:
-        // 1. Parse timeout values safely and fall back on invalid text.
         if (value == null || value.isBlank()) {
             return defaultValue;
         }
@@ -102,62 +91,42 @@ public final class ResendConfig {
     }
 
     public boolean isEnabled() {
-        // Mini-code guide:
-        // 1. Return whether Resend can be used for outbound email.
         return enabled;
     }
 
     public String getProvider() {
-        // Mini-code guide:
-        // 1. Return the normalized provider id.
         return provider;
     }
 
     public String getApiKey() {
-        // Mini-code guide:
-        // 1. Return the Resend API key; do not print it in logs/UI.
         return apiKey;
     }
 
     public String getFromEmail() {
-        // Mini-code guide:
-        // 1. Return the verified sender address for Resend.
         return fromEmail;
     }
 
     public String getFromName() {
-        // Mini-code guide:
-        // 1. Return the display name shown on outgoing email.
         return fromName;
     }
 
     public String getReplyTo() {
-        // Mini-code guide:
-        // 1. Return the optional reply-to address.
         return replyTo;
     }
 
     public String getApiBaseUrl() {
-        // Mini-code guide:
-        // 1. Return the Resend API base URL.
         return apiBaseUrl;
     }
 
     public int getTimeoutSeconds() {
-        // Mini-code guide:
-        // 1. Return the HTTP timeout for email delivery requests.
         return timeoutSeconds;
     }
 
     public Path getSourcePath() {
-        // Mini-code guide:
-        // 1. Return the config file path that supplied these settings.
         return sourcePath;
     }
 
     public String getStatusMessage() {
-        // Mini-code guide:
-        // 1. Return a friendly explanation of whether Resend is ready.
         return statusMessage;
     }
 }

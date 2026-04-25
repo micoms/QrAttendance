@@ -6,8 +6,8 @@ import javax.swing.Box;
 import javax.swing.JPanel;
 import javax.swing.JTable;
 import javax.swing.table.DefaultTableModel;
-import ppb.qrattend.model.AppDomain.ScheduleSlot;
-import ppb.qrattend.model.AppDomain.TeacherProfile;
+import ppb.qrattend.model.CoreModels.EmailLog;
+import ppb.qrattend.model.CoreModels.RequestStatus;
 
 final class AdminDashboardScreen {
 
@@ -16,72 +16,99 @@ final class AdminDashboardScreen {
 
     static JPanel build(AppShell shell) {
         JPanel page = AppTheme.createPage();
-        page.add(buildTaskTiles(shell));
+        page.add(buildActionTiles(shell));
         page.add(Box.createVerticalStrut(16));
-        page.add(buildSimpleSummary(shell));
+        page.add(buildSummary(shell));
         page.add(Box.createVerticalStrut(16));
-        page.add(buildTodayClasses(shell));
+        page.add(buildRecentEmailSection(shell));
         return page;
     }
 
-    private static JPanel buildTaskTiles(AppShell shell) {
+    private static JPanel buildActionTiles(AppShell shell) {
         JPanel firstRow = AppFlowPanels.createTileRow(
-                AppFlowPanels.createActionTile("Step 1", "Add a teacher",
-                        "Start by adding the teacher's name and email address.",
+                AppFlowPanels.createActionTile("Step 1", "Add Teacher",
+                        "Create the teacher account first. The password email is sent for you.",
                         "Open Teachers", () -> shell.openView("teachers")),
-                AppFlowPanels.createActionTile("Step 2", "Add students",
-                        "Put students in the right section and assign the teacher.",
+                AppFlowPanels.createActionTile("Step 2", "Add Students",
+                        "Pick a section, import a class list, or add one student at a time.",
                         "Open Students", () -> shell.openView("students"))
         );
 
         JPanel secondRow = AppFlowPanels.createTileRow(
-                AppFlowPanels.createActionTile("Step 3", "Set class schedule",
-                        "Choose the day, time, subject, and room for each class.",
+                AppFlowPanels.createActionTile("Step 3", "Set Schedule",
+                        "Build classes using saved teachers, sections, subjects, and rooms.",
                         "Open Schedule", () -> shell.openView("schedules")),
-                AppFlowPanels.createActionTile("Step 4", "Check requests",
-                        "Review schedule changes and class list requests that still need approval.",
+                AppFlowPanels.createActionTile("Step 4", "Review Requests",
+                        "Check pending schedule changes and class list requests first.",
                         "Open Requests", () -> shell.openView("requests"))
         );
 
         JPanel thirdRow = AppFlowPanels.createTileRow(
-                AppFlowPanels.createActionTile("Step 5", "View reports",
-                        "Check attendance records and refresh the school summary.",
+                AppFlowPanels.createActionTile("Step 5", "View Reports",
+                        "Read the school attendance summary and open the full records below.",
                         "Open Reports", () -> shell.openView("reports")),
-                AppFlowPanels.createSimpleList("Quick school check", buildQuickLines(shell))
+                AppFlowPanels.createSimpleList("What to do next", buildHelpLines(shell))
         );
 
         return AppTheme.stack(firstRow, secondRow, thirdRow);
     }
 
-    private static JPanel buildSimpleSummary(AppShell shell) {
+    private static JPanel buildSummary(AppShell shell) {
+        int teacherCount = shell.getStore().getTeachers().size();
+        int sectionCount = shell.getStore().getSections().size();
+        int pendingCount = countPending(shell);
+
         return shell.createMetricsRow(
-                AppTheme.createStatCard("Teachers", String.valueOf(shell.getStore().getTeacherCount()), AppTheme.BRAND),
-                AppTheme.createStatCard("Need approval", String.valueOf(shell.getStore().getPendingRequestCount()), AppTheme.WARNING),
-                AppTheme.createStatCard("Email issues", String.valueOf(shell.getStore().getFailedEmailCount()), AppTheme.DANGER)
+                AppTheme.createStatCard("Teachers", String.valueOf(teacherCount), AppTheme.BRAND),
+                AppTheme.createStatCard("Sections", String.valueOf(sectionCount), AppTheme.INFO),
+                AppTheme.createStatCard("Need Approval", String.valueOf(pendingCount), AppTheme.WARNING)
         );
     }
 
-    private static JPanel buildTodayClasses(AppShell shell) {
-        DefaultTableModel model = shell.createTableModel("Teacher", "Subject", "Time", "Room");
-        for (ScheduleSlot slot : shell.getStore().getTodaySchedules()) {
-            TeacherProfile teacher = shell.getStore().findTeacher(slot.getTeacherId());
+    private static JPanel buildRecentEmailSection(AppShell shell) {
+        DefaultTableModel model = shell.createTableModel("Type", "Sent To", "Subject", "Status", "Saved");
+        for (EmailLog log : shell.getStore().getRecentEmailLogs(8)) {
             model.addRow(new Object[]{
-                teacher == null ? "-" : teacher.getFullName(),
-                slot.getSubjectName(),
-                slot.getTimeLabel(),
-                slot.getRoom()
+                log.emailType(),
+                log.recipientEmail(),
+                log.subjectLine(),
+                log.status().getLabel(),
+                log.createdAt().format(ppb.qrattend.model.CoreModels.DATE_TIME_FORMAT)
             });
         }
 
         JTable table = new JTable(model);
-        return shell.createSection("Today", "These are the classes planned for today.", shell.wrapTable(table));
+        return shell.createSection("Recent Emails", "This helps you check whether password and QR emails were saved.", shell.wrapTable(table));
     }
 
-    private static List<String> buildQuickLines(AppShell shell) {
+    private static List<String> buildHelpLines(AppShell shell) {
         List<String> lines = new ArrayList<>();
-        lines.add("Teachers: " + shell.getStore().getTeacherCount());
-        lines.add("Classes open now: " + shell.getStore().getActiveClassCount());
-        lines.add("Requests waiting: " + shell.getStore().getPendingRequestCount());
+        if (shell.getStore().getSections().isEmpty()) {
+            lines.add("Start with Sections so students and schedules have something to use.");
+        } else {
+            lines.add("Sections are ready. You can add students and schedules now.");
+        }
+        if (shell.getStore().getSubjects().isEmpty() || shell.getStore().getRooms().isEmpty()) {
+            lines.add("Save subjects and rooms before you build the class schedule.");
+        } else {
+            lines.add("Subjects and rooms are ready for schedule setup.");
+        }
+        lines.add("Pending requests: " + countPending(shell));
         return lines;
+    }
+
+    private static int countPending(AppShell shell) {
+        int total = 0;
+        for (var request : shell.getStore().getScheduleRequests()) {
+            if (request.status() == RequestStatus.PENDING) {
+                total++;
+            }
+        }
+        for (var request : shell.getStore().getStudentRemovalRequests()) {
+            if (request.status() == RequestStatus.PENDING) {
+                total++;
+            }
+        }
+        return total;
     }
 }

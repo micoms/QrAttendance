@@ -7,8 +7,8 @@ import java.awt.Graphics2D;
 import java.awt.Image;
 import java.awt.Insets;
 import java.awt.RenderingHints;
-import java.awt.event.FocusAdapter;
 import java.awt.event.FocusEvent;
+import java.awt.event.FocusListener;
 import javax.swing.Icon;
 import javax.swing.ImageIcon;
 import javax.swing.JPasswordField;
@@ -33,10 +33,7 @@ public class MyPasswordField extends JPasswordField {
         setSelectionColor(new Color(52, 168, 100, 80));
         updateBorder();
 
-        addFocusListener(new FocusAdapter() {
-            @Override public void focusGained(FocusEvent e) { focused = true;  repaint(); }
-            @Override public void focusLost(FocusEvent e)   { focused = false; repaint(); }
-        });
+        addFocusListener(new FocusStateListener(this));
     }
 
     public String getHint()                 { return hint; }
@@ -103,6 +100,27 @@ public class MyPasswordField extends JPasswordField {
             Image img = ((ImageIcon) suffixIcon).getImage();
             int y = (getHeight() - suffixIcon.getIconHeight()) / 2;
             g2.drawImage(img, getWidth() - suffixIcon.getIconWidth() - 10, y, this);
+        }
+    }
+
+    private static final class FocusStateListener implements FocusListener {
+
+        private final MyPasswordField field;
+
+        private FocusStateListener(MyPasswordField field) {
+            this.field = field;
+        }
+
+        @Override
+        public void focusGained(FocusEvent event) {
+            field.focused = true;
+            field.repaint();
+        }
+
+        @Override
+        public void focusLost(FocusEvent event) {
+            field.focused = false;
+            field.repaint();
         }
     }
 }

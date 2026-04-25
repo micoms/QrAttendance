@@ -5,7 +5,7 @@
 
 db.enabled=true
 db.driverClass=com.mysql.cj.jdbc.Driver
-db.url=jdbc:mysql://localhost:3306/qrattend_db?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Singapore
+db.url=jdbc:mysql://localhost:3306/qrattend_db?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Manila
 db.username=root
 db.password=your_mariadb_password_here
 

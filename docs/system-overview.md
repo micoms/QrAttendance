@@ -1,116 +1,82 @@
 # System Overview
 
-This file explains the whole app in simple terms.
-
-## 1. Main idea
-
-The project is split into four layers:
-
-1. UI
-2. store
-3. services
-4. database or outside APIs
-
-## 2. Architecture
+This app follows one simple runtime path.
 
 ```mermaid
 flowchart LR
-    A["Swing UI"] --> B["AppShell"]
-    B --> C["AppDataStore"]
-    C --> D["TeacherService"]
-    C --> E["StudentService"]
-    C --> F["ScheduleService"]
-    C --> G["AttendanceService"]
-    C --> H["ReportService"]
-    C --> I["StoreTeacherAssistantSupport"]
-    D --> J["MariaDB"]
-    E --> J
-    F --> J
-    G --> J
-    H --> J
-    I --> K["AiInsightService"]
-    K --> L["Gemini"]
-    D --> M["Resend"]
-    E --> M
-    G --> N["QR scanner / camera"]
+    A["Main"] --> B["Login UI"]
+    B --> C["DatabaseAuthenticationService"]
+    C --> D["AppShell"]
+    D --> E["AppStore"]
+    E --> F["Feature Service"]
+    F --> G["MariaDB"]
+    F --> H["Resend"]
+    F --> I["Gemini"]
+    F --> J["QR tools"]
 ```
 
-## 3. Runtime flow
+## What each layer does
 
-In plain words:
+### `Main`
 
-1. `Main.java` starts the app
-2. the sign in screen opens
-3. `DatabaseAuthenticationService` checks the email and password
-4. `AppShell` opens the admin or teacher workspace
-5. the current page asks `AppDataStore` for data
-6. `AppDataStore` calls the correct service class
-7. service classes talk to MariaDB or outside APIs
+Starts the window, builds the login screen, and opens the workspace after login.
 
-## 4. Why AppDataStore exists
+### Login UI
 
-The Swing screens should not talk directly to SQL or to APIs.
+Shows the admin/teacher sign-in form.
 
-So `AppDataStore` acts like one middle layer:
+### `DatabaseAuthenticationService`
 
-- screen asks the store for data
-- store chooses the right service
-- store returns easy UI-ready results
+Checks:
 
-This keeps the screen code simpler.
+- email
+- password hash
+- selected role
+- active account
 
-## 5. Why the UI was split into small screen files
+### `AppShell`
 
-Before the refactor, too much UI logic lived in the shell.
+Handles:
 
-Now the shell mainly does:
-
-- menu
+- small left menu
 - page title
-- banner messages
-- right-side help panel
-- switching pages
+- banner message
+- screen switching
 
-Each screen now has its own file, for example:
+It should stay simple. It is not the place for database logic.
 
-- admin home
-- teacher home
-- attendance
-- students
-- schedules
-- requests
-- reports
+### `AppStore`
 
-This makes it easier for a beginner to find the page they want to edit.
+This is the UI-facing facade.
 
-## 6. Current UX direction
+The screens call `AppStore`.
 
-The app is meant to feel simple:
+`AppStore` then calls the service classes.
 
-- home is the main starting point
-- each page has one main task first
-- help and extra details stay secondary
-- wording uses plain school language
+### Services
 
-The app is not trying to feel like a technical dashboard.
+Each service handles one feature:
 
-## 7. Important packages
+- `TeacherService`
+- `SectionService`
+- `StudentService`
+- `ScheduleService`
+- `AttendanceService`
+- `ReportService`
+- `EmailService`
+- `AiChatService`
 
-- `main`
-  - starts the app
-- `component.login`
-  - sign in UI
-- `app`
-  - shell and screen files
-- `app.store`
-  - small store helpers for messages and AI chat
-- `service`
-  - real business logic
-- `db`
-  - DB config, password hashing, security helpers
-- `email`
-  - Resend
-- `qr`
-  - QR code generation and scanning
-- `model`
-  - shared app data objects
+### Outside systems
+
+- MariaDB stores app data
+- Resend sends emails
+- Gemini answers teacher AI questions
+- QR tools build and scan QR codes
+
+## Why this structure is easier
+
+- screens stay focused on UI
+- services stay focused on business rules
+- the database is small
+- the app has one active runtime path only
+- there is no demo/in-memory runtime path to confuse the code
