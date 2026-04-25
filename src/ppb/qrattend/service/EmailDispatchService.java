@@ -106,18 +106,30 @@ public final class EmailDispatchService {
     }
 
     public ServiceResult<EmailDispatch> queueTeacherPasswordEmail(int teacherId, String recipientEmail, String temporaryPassword) {
+        return queueTeacherPasswordEmail(null, teacherId, recipientEmail, false);
+    }
+
+    public ServiceResult<EmailDispatch> queueTeacherPasswordEmail(Connection connection, int teacherId,
+            String recipientEmail, boolean resetMode) {
         return insertEmailLog(
+                connection,
                 recipientEmail,
-                "TEACHER_PASSWORD",
+                resetMode ? "PASSWORD_RESET" : "TEACHER_PASSWORD",
                 teacherId,
                 null,
-                "Your teacher account is ready",
+                resetMode ? "Your password was reset" : "Your teacher account is ready",
                 SAFE_PASSWORD_PREVIEW
         );
     }
 
     public ServiceResult<EmailDispatch> queueStudentQrEmail(int studentPrimaryKey, String recipientEmail, String qrPayload, boolean resend) {
+        return queueStudentQrEmail(null, studentPrimaryKey, recipientEmail, resend);
+    }
+
+    public ServiceResult<EmailDispatch> queueStudentQrEmail(Connection connection, int studentPrimaryKey,
+            String recipientEmail, boolean resend) {
         return insertEmailLog(
+                connection,
                 recipientEmail,
                 resend ? "QR_RESEND" : "STUDENT_QR",
                 null,
@@ -135,21 +147,8 @@ public final class EmailDispatchService {
             return ServiceResult.failure(databaseManager.getStatusMessage());
         }
 
-        try (Connection connection = databaseManager.openConnection();
-                PreparedStatement statement = connection.prepareStatement("""
-                        UPDATE email_dispatch_logs
-                        SET delivery_status = 'SENT',
-                            provider_message_id = ?,
-                            error_message = NULL,
-                            sent_at = CURRENT_TIMESTAMP
-                        WHERE email_id = ?
-                        """)) {
-            statement.setString(1, safe(providerMessageId));
-            statement.setInt(2, emailDispatchId);
-            if (statement.executeUpdate() == 0) {
-                return ServiceResult.failure("Email log not found.");
-            }
-            return ServiceResult.success("Email marked as sent.", null);
+        try (Connection connection = databaseManager.openConnection()) {
+            return markEmailSent(connection, emailDispatchId, providerMessageId);
         } catch (SQLException ex) {
             return ServiceResult.failure("Could not update the email log.");
         }
@@ -163,14 +162,41 @@ public final class EmailDispatchService {
             return ServiceResult.failure(databaseManager.getStatusMessage());
         }
 
-        try (Connection connection = databaseManager.openConnection();
-                PreparedStatement statement = connection.prepareStatement("""
-                        UPDATE email_dispatch_logs
-                        SET delivery_status = 'FAILED',
-                            error_message = ?,
-                            sent_at = NULL
-                        WHERE email_id = ?
-                        """)) {
+        try (Connection connection = databaseManager.openConnection()) {
+            return markEmailFailed(connection, emailDispatchId, errorMessage);
+        } catch (SQLException ex) {
+            return ServiceResult.failure("Could not update the email log.");
+        }
+    }
+
+    public ServiceResult<Void> markEmailSent(Connection connection, int emailDispatchId, String providerMessageId) {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                UPDATE email_dispatch_logs
+                SET delivery_status = 'SENT',
+                    provider_message_id = ?,
+                    error_message = NULL,
+                    sent_at = CURRENT_TIMESTAMP
+                WHERE email_id = ?
+                """)) {
+            statement.setString(1, safe(providerMessageId));
+            statement.setInt(2, emailDispatchId);
+            if (statement.executeUpdate() == 0) {
+                return ServiceResult.failure("Email log not found.");
+            }
+            return ServiceResult.success("Email marked as sent.", null);
+        } catch (SQLException ex) {
+            return ServiceResult.failure("Could not update the email log.");
+        }
+    }
+
+    public ServiceResult<Void> markEmailFailed(Connection connection, int emailDispatchId, String errorMessage) {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                UPDATE email_dispatch_logs
+                SET delivery_status = 'FAILED',
+                    error_message = ?,
+                    sent_at = NULL
+                WHERE email_id = ?
+                """)) {
             statement.setString(1, truncate(errorMessage, 1000));
             statement.setInt(2, emailDispatchId);
             if (statement.executeUpdate() == 0) {
@@ -182,7 +208,29 @@ public final class EmailDispatchService {
         }
     }
 
-    private ServiceResult<EmailDispatch> insertEmailLog(String recipientEmail, String emailType, Integer relatedUserId,
+    public void markEmailSentQuietly(int emailDispatchId, String providerMessageId) {
+        if (!databaseManager.isReady() || emailDispatchId <= 0) {
+            return;
+        }
+        try (Connection connection = databaseManager.openConnection()) {
+            markEmailSent(connection, emailDispatchId, providerMessageId);
+        } catch (SQLException ex) {
+            // Keep the main business action committed even if this follow-up update fails.
+        }
+    }
+
+    public void markEmailFailedQuietly(int emailDispatchId, String errorMessage) {
+        if (!databaseManager.isReady() || emailDispatchId <= 0) {
+            return;
+        }
+        try (Connection connection = databaseManager.openConnection()) {
+            markEmailFailed(connection, emailDispatchId, errorMessage);
+        } catch (SQLException ex) {
+            // Keep the main business action committed even if this follow-up update fails.
+        }
+    }
+
+    private ServiceResult<EmailDispatch> insertEmailLog(Connection connection, String recipientEmail, String emailType, Integer relatedUserId,
             Integer relatedStudentPk, String subjectLine, String preview) {
         if (isBlank(recipientEmail) || !looksLikeEmail(recipientEmail)) {
             return ServiceResult.failure("Enter a valid email first.");
@@ -191,47 +239,62 @@ public final class EmailDispatchService {
             return ServiceResult.failure(databaseManager.getStatusMessage());
         }
 
-        try (Connection connection = databaseManager.openConnection();
-                PreparedStatement statement = connection.prepareStatement("""
-                        INSERT INTO email_dispatch_logs
-                            (recipient_email, email_type, related_user_id, related_student_pk, subject_line, message_preview, delivery_status)
-                        VALUES (?, ?, ?, ?, ?, ?, 'QUEUED')
-                        """, Statement.RETURN_GENERATED_KEYS)) {
-            statement.setString(1, recipientEmail.trim().toLowerCase(Locale.ENGLISH));
-            statement.setString(2, emailType);
-            if (relatedUserId == null) {
-                statement.setNull(3, java.sql.Types.BIGINT);
-            } else {
-                statement.setInt(3, relatedUserId);
+        boolean openedHere = false;
+        try {
+            if (connection == null) {
+                connection = databaseManager.openConnection();
+                openedHere = true;
             }
-            if (relatedStudentPk == null) {
-                statement.setNull(4, java.sql.Types.BIGINT);
-            } else {
-                statement.setInt(4, relatedStudentPk);
-            }
-            statement.setString(5, SecurityUtil.safePreview(subjectLine));
-            statement.setString(6, SecurityUtil.safePreview(preview));
-            statement.executeUpdate();
 
-            int emailId;
-            try (ResultSet keys = statement.getGeneratedKeys()) {
-                if (!keys.next()) {
-                    return ServiceResult.failure("Could not queue the email.");
+            try (PreparedStatement statement = connection.prepareStatement("""
+                            INSERT INTO email_dispatch_logs
+                                (recipient_email, email_type, related_user_id, related_student_pk, subject_line, message_preview, delivery_status)
+                            VALUES (?, ?, ?, ?, ?, ?, 'QUEUED')
+                            """, Statement.RETURN_GENERATED_KEYS)) {
+                statement.setString(1, recipientEmail.trim().toLowerCase(Locale.ENGLISH));
+                statement.setString(2, emailType);
+                if (relatedUserId == null) {
+                    statement.setNull(3, java.sql.Types.BIGINT);
+                } else {
+                    statement.setInt(3, relatedUserId);
                 }
-                emailId = keys.getInt(1);
-            }
+                if (relatedStudentPk == null) {
+                    statement.setNull(4, java.sql.Types.BIGINT);
+                } else {
+                    statement.setInt(4, relatedStudentPk);
+                }
+                statement.setString(5, SecurityUtil.safePreview(subjectLine));
+                statement.setString(6, SecurityUtil.safePreview(preview));
+                statement.executeUpdate();
 
-            EmailDispatch dispatch = new EmailDispatch(
-                    emailId,
-                    recipientEmail.trim().toLowerCase(Locale.ENGLISH),
-                    SecurityUtil.safePreview(subjectLine),
-                    SecurityUtil.safePreview(preview),
-                    EmailStatus.QUEUED,
-                    LocalDateTime.now()
-            );
-            return ServiceResult.success("Email queued.", dispatch);
+                int emailId;
+                try (ResultSet keys = statement.getGeneratedKeys()) {
+                    if (!keys.next()) {
+                        return ServiceResult.failure("Could not queue the email.");
+                    }
+                    emailId = keys.getInt(1);
+                }
+
+                EmailDispatch dispatch = new EmailDispatch(
+                        emailId,
+                        recipientEmail.trim().toLowerCase(Locale.ENGLISH),
+                        SecurityUtil.safePreview(subjectLine),
+                        SecurityUtil.safePreview(preview),
+                        EmailStatus.QUEUED,
+                        LocalDateTime.now()
+                );
+                return ServiceResult.success("Email queued.", dispatch);
+            }
         } catch (SQLException ex) {
             return ServiceResult.failure("Could not queue the email.");
+        } finally {
+            if (openedHere && connection != null) {
+                try {
+                    connection.close();
+                } catch (SQLException ex) {
+                    // Nothing else to do here.
+                }
+            }
         }
     }
 

@@ -93,16 +93,24 @@ public final class AuditLogService {
         if (!databaseManager.isReady()) {
             return ServiceResult.failure(databaseManager.getStatusMessage());
         }
+        try (Connection connection = databaseManager.openConnection()) {
+            return logAction(connection, actorUserId, actionType, entityType, entityId, oldValuesJson, newValuesJson, notes);
+        } catch (SQLException ex) {
+            return ServiceResult.failure("Could not save the audit log.");
+        }
+    }
+
+    public ServiceResult<Void> logAction(Connection connection, Integer actorUserId, String actionType, String entityType,
+            String entityId, String oldValuesJson, String newValuesJson, String notes) {
         if (isBlank(actionType) || isBlank(entityType) || isBlank(entityId)) {
             return ServiceResult.failure("Audit action details are incomplete.");
         }
 
-        try (Connection connection = databaseManager.openConnection();
-                PreparedStatement statement = connection.prepareStatement("""
-                        INSERT INTO audit_logs
-                            (actor_user_id, action_type, entity_type, entity_id, old_values_json, new_values_json, notes, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                        """)) {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO audit_logs
+                    (actor_user_id, action_type, entity_type, entity_id, old_values_json, new_values_json, notes, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """)) {
             if (actorUserId == null) {
                 statement.setNull(1, java.sql.Types.BIGINT);
             } else {

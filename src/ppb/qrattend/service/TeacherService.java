@@ -13,7 +13,6 @@ import java.util.List;
 import java.util.Locale;
 import ppb.qrattend.db.DatabaseManager;
 import ppb.qrattend.db.PasswordUtil;
-import ppb.qrattend.db.SecurityUtil;
 import ppb.qrattend.email.ResendEmailClient;
 import ppb.qrattend.model.AppDomain.EmailStatus;
 import ppb.qrattend.model.AppDomain.TeacherProfile;
@@ -93,18 +92,6 @@ public final class TeacherService {
             VALUES (?, NULL, 'APPROVAL_REQUIRED', ?)
             """;
 
-    private static final String INSERT_EMAIL_LOG_SQL = """
-            INSERT INTO email_dispatch_logs
-                (recipient_email, email_type, related_user_id, subject_line, message_preview, delivery_status)
-            VALUES (?, ?, ?, ?, ?, 'QUEUED')
-            """;
-
-    private static final String INSERT_AUDIT_LOG_SQL = """
-            INSERT INTO audit_logs
-                (actor_user_id, action_type, entity_type, entity_id, old_values_json, new_values_json, notes, created_at)
-            VALUES (?, ?, 'TEACHER', ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            """;
-
     private static final String UPDATE_PASSWORD_SQL = """
             UPDATE users
             SET password_hash = ?, must_change_password = 1, updated_at = CURRENT_TIMESTAMP
@@ -112,25 +99,10 @@ public final class TeacherService {
               AND role = 'TEACHER'
             """;
 
-    private static final String UPDATE_EMAIL_SENT_SQL = """
-            UPDATE email_dispatch_logs
-            SET delivery_status = 'SENT',
-                provider_message_id = ?,
-                error_message = NULL,
-                sent_at = CURRENT_TIMESTAMP
-            WHERE email_id = ?
-            """;
-
-    private static final String UPDATE_EMAIL_FAILED_SQL = """
-            UPDATE email_dispatch_logs
-            SET delivery_status = 'FAILED',
-                error_message = ?,
-                sent_at = NULL
-            WHERE email_id = ?
-            """;
-
     private final DatabaseManager databaseManager;
     private final ResendEmailClient resendEmailClient;
+    private final AuditLogService auditLogService;
+    private final EmailDispatchService emailDispatchService;
 
     public TeacherService() {
         // Mini-code guide:
@@ -139,10 +111,17 @@ public final class TeacherService {
     }
 
     public TeacherService(DatabaseManager databaseManager, ResendEmailClient resendEmailClient) {
+        this(databaseManager, resendEmailClient, new AuditLogService(databaseManager), new EmailDispatchService(databaseManager));
+    }
+
+    public TeacherService(DatabaseManager databaseManager, ResendEmailClient resendEmailClient,
+            AuditLogService auditLogService, EmailDispatchService emailDispatchService) {
         // Mini-code guide:
         // 1. Allow constructor injection so the service can be tested independently later.
         this.databaseManager = databaseManager;
         this.resendEmailClient = resendEmailClient;
+        this.auditLogService = auditLogService;
+        this.emailDispatchService = emailDispatchService;
     }
 
     public boolean isReady() {
@@ -262,72 +241,20 @@ public final class TeacherService {
          * - Password generation/hash failure.
          * - Any insert failure that should roll back the whole transaction.
          */
-        if (!databaseManager.isReady()) {
-            return ServiceResult.failure(databaseManager.getStatusMessage());
-        }
-        if (actorUserId <= 0) {
-            return ServiceResult.failure("A valid admin account is required to create a teacher.");
+        ServiceResult<TeacherDraft> draftResult = prepareTeacherDraft(actorUserId, fullName, email);
+        if (!draftResult.isSuccess() || draftResult.getData() == null) {
+            return ServiceResult.failure(draftResult.getMessage());
         }
 
-        String normalizedName = normalizeName(fullName);
-        String normalizedEmail = normalizeEmail(email);
-        if (normalizedName.isBlank() || normalizedEmail.isBlank()) {
-            return ServiceResult.failure("Teacher name and email are required.");
-        }
-        if (!looksLikeEmail(normalizedEmail)) {
-            return ServiceResult.failure("Enter a valid teacher email address.");
+        TeacherDraft draft = draftResult.getData();
+        ServiceResult<TeacherCreateResult> saveResult = saveTeacherAccount(actorUserId, draft);
+        if (!saveResult.isSuccess() || saveResult.getData() == null) {
+            return ServiceResult.failure(saveResult.getMessage());
         }
 
-        String temporaryPassword = generateTemporaryPassword();
-        String passwordHash = PasswordUtil.hashPassword(temporaryPassword);
-        long teacherUserId;
-        long emailLogId;
-
-        try (Connection connection = databaseManager.openConnection()) {
-            connection.setAutoCommit(false);
-            try {
-                if (emailExists(connection, normalizedEmail)) {
-                    connection.rollback();
-                    return ServiceResult.failure("A teacher already uses that email address.");
-                }
-
-                teacherUserId = insertUser(connection, normalizedName, normalizedEmail, passwordHash);
-                insertTeacherProfile(connection, teacherUserId, actorUserId);
-                emailLogId = insertTeacherEmailLog(connection, teacherUserId, normalizedEmail, temporaryPassword, false);
-                insertAuditLog(connection, actorUserId, "TEACHER_CREATE", String.valueOf(teacherUserId),
-                        null,
-                        buildTeacherJson(normalizedName, normalizedEmail, "ACTIVE"),
-                        "Teacher account created by admin.");
-                connection.commit();
-            } catch (SQLException ex) {
-                rollbackQuietly(connection);
-                return ServiceResult.failure("Could not create the teacher account.");
-            } finally {
-                restoreAutoCommit(connection);
-            }
-        } catch (SQLException ex) {
-            return ServiceResult.failure("Could not create the teacher account.");
-        }
-
-        ResendEmailClient.EmailSendResult emailResult = resendEmailClient.sendTeacherPasswordEmail(
-                normalizedEmail, normalizedName, temporaryPassword, false);
-        TeacherProfile teacherProfile = loadTeacherProfileOrFallback((int) teacherUserId, normalizedName, normalizedEmail);
-
-        if (emailResult.isSuccess()) {
-            updateEmailLogSent(emailLogId, emailResult.getProviderMessageId());
-            teacherProfile.setEmailStatus(EmailStatus.SENT);
-            return ServiceResult.success(
-                    "Teacher account created and password email sent to " + normalizedName + ".",
-                    loadTeacherProfileOrFallback((int) teacherUserId, normalizedName, normalizedEmail)
-            );
-        }
-
-        updateEmailLogFailed(emailLogId, emailResult.getMessage());
-        teacherProfile.setEmailStatus(EmailStatus.FAILED);
-        return ServiceResult.warning(
-                "Teacher account created, but the password email could not be sent yet.",
-                teacherProfile
-        );
+        return sendTeacherPasswordEmail(saveResult.getData(), draft.temporaryPassword, false,
+                "Teacher account created and password email sent to ",
+                "Teacher account created, but the password email could not be sent yet.");
     }
 
     public ServiceResult<Void> resendTeacherPassword(int actorUserId, int teacherId) {
@@ -392,6 +319,111 @@ public final class TeacherService {
 
     private ServiceResult<Void> rotateTeacherPassword(int actorUserId, int teacherId, String auditActionType,
             String auditNote, String successMessagePrefix) {
+        ServiceResult<TeacherPasswordChangeResult> changeResult = saveTeacherPasswordChange(
+                actorUserId, teacherId, auditActionType, auditNote);
+        if (!changeResult.isSuccess() || changeResult.getData() == null) {
+            return ServiceResult.failure(changeResult.getMessage());
+        }
+
+        TeacherPasswordChangeResult change = changeResult.getData();
+        ResendEmailClient.EmailSendResult emailResult = resendEmailClient.sendTeacherPasswordEmail(
+                change.teacher.email, change.teacher.fullName, change.temporaryPassword, true);
+
+        if (emailResult.isSuccess()) {
+            emailDispatchService.markEmailSentQuietly(change.emailLogId, emailResult.getProviderMessageId());
+            return ServiceResult.success(successMessagePrefix + change.teacher.fullName + ".", null);
+        }
+
+        emailDispatchService.markEmailFailedQuietly(change.emailLogId, emailResult.getMessage());
+        return ServiceResult.warning(
+                "Password was changed for " + change.teacher.fullName + ", but the email could not be sent yet.",
+                null
+        );
+    }
+
+    private ServiceResult<TeacherDraft> prepareTeacherDraft(int actorUserId, String fullName, String email) {
+        if (!databaseManager.isReady()) {
+            return ServiceResult.failure(databaseManager.getStatusMessage());
+        }
+        if (actorUserId <= 0) {
+            return ServiceResult.failure("A valid admin account is required to create a teacher.");
+        }
+
+        String normalizedName = normalizeName(fullName);
+        String normalizedEmail = normalizeEmail(email);
+        if (normalizedName.isBlank() || normalizedEmail.isBlank()) {
+            return ServiceResult.failure("Teacher name and email are required.");
+        }
+        if (!looksLikeEmail(normalizedEmail)) {
+            return ServiceResult.failure("Enter a valid teacher email address.");
+        }
+
+        String temporaryPassword = generateTemporaryPassword();
+        return ServiceResult.success("Teacher details are ready.",
+                new TeacherDraft(normalizedName, normalizedEmail, temporaryPassword, PasswordUtil.hashPassword(temporaryPassword)));
+    }
+
+    private ServiceResult<TeacherCreateResult> saveTeacherAccount(int actorUserId, TeacherDraft draft) {
+        try (Connection connection = databaseManager.openConnection()) {
+            connection.setAutoCommit(false);
+            try {
+                if (emailExists(connection, draft.email)) {
+                    rollbackQuietly(connection);
+                    return ServiceResult.failure("A teacher already uses that email address.");
+                }
+
+                long teacherUserId = insertUser(connection, draft.fullName, draft.email, draft.passwordHash);
+                insertTeacherProfile(connection, teacherUserId, actorUserId);
+
+                ServiceResult<Integer> emailLogResult = queueTeacherPasswordEmail(connection, (int) teacherUserId, draft.email, false);
+                if (!emailLogResult.isSuccess() || emailLogResult.getData() == null) {
+                    rollbackQuietly(connection);
+                    return ServiceResult.failure("Could not create the teacher account.");
+                }
+
+                ServiceResult<Void> auditResult = auditLogService.logAction(connection, actorUserId,
+                        "TEACHER_CREATE", "TEACHER", String.valueOf(teacherUserId),
+                        null, buildTeacherJson(draft.fullName, draft.email, "ACTIVE"),
+                        "Teacher account created by admin.");
+                if (!auditResult.isSuccess()) {
+                    rollbackQuietly(connection);
+                    return ServiceResult.failure("Could not create the teacher account.");
+                }
+
+                connection.commit();
+                return ServiceResult.success("Teacher account saved.",
+                        new TeacherCreateResult((int) teacherUserId, draft.fullName, draft.email, emailLogResult.getData()));
+            } catch (SQLException ex) {
+                rollbackQuietly(connection);
+                return ServiceResult.failure("Could not create the teacher account.");
+            } finally {
+                restoreAutoCommit(connection);
+            }
+        } catch (SQLException ex) {
+            return ServiceResult.failure("Could not create the teacher account.");
+        }
+    }
+
+    private ServiceResult<TeacherProfile> sendTeacherPasswordEmail(TeacherCreateResult created, String temporaryPassword,
+            boolean resetMode, String successPrefix, String warningMessage) {
+        ResendEmailClient.EmailSendResult emailResult = resendEmailClient.sendTeacherPasswordEmail(
+                created.email, created.fullName, temporaryPassword, resetMode);
+
+        TeacherProfile teacherProfile = loadTeacherProfileOrFallback(created.teacherId, created.fullName, created.email);
+        if (emailResult.isSuccess()) {
+            emailDispatchService.markEmailSentQuietly(created.emailLogId, emailResult.getProviderMessageId());
+            teacherProfile.setEmailStatus(EmailStatus.SENT);
+            return ServiceResult.success(successPrefix + created.fullName + ".",
+                    loadTeacherProfileOrFallback(created.teacherId, created.fullName, created.email));
+        }
+
+        emailDispatchService.markEmailFailedQuietly(created.emailLogId, emailResult.getMessage());
+        teacherProfile.setEmailStatus(EmailStatus.FAILED);
+        return ServiceResult.warning(warningMessage, teacherProfile);
+    }
+
+    private ServiceResult<TeacherPasswordChangeResult> saveTeacherPasswordChange(int actorUserId, int teacherId,
+            String auditActionType, String auditNote) {
         if (!databaseManager.isReady()) {
             return ServiceResult.failure(databaseManager.getStatusMessage());
         }
@@ -402,39 +434,44 @@ public final class TeacherService {
             return ServiceResult.failure("Select a teacher first.");
         }
 
-        TeacherAccountRow teacherRow;
         String temporaryPassword = generateTemporaryPassword();
         String passwordHash = PasswordUtil.hashPassword(temporaryPassword);
-        long emailLogId;
 
         try (Connection connection = databaseManager.openConnection()) {
             connection.setAutoCommit(false);
             try {
-                teacherRow = loadTeacherAccount(connection, teacherId);
+                TeacherAccountRow teacherRow = loadTeacherAccount(connection, teacherId);
                 if (teacherRow == null) {
-                    connection.rollback();
+                    rollbackQuietly(connection);
                     return ServiceResult.failure("Teacher not found.");
                 }
                 if (!"ACTIVE".equalsIgnoreCase(teacherRow.accountStatus)) {
-                    connection.rollback();
+                    rollbackQuietly(connection);
                     return ServiceResult.failure("This teacher account is not active.");
                 }
 
-                try (PreparedStatement update = connection.prepareStatement(UPDATE_PASSWORD_SQL)) {
-                    update.setString(1, passwordHash);
-                    update.setInt(2, teacherId);
-                    if (update.executeUpdate() == 0) {
-                        connection.rollback();
-                        return ServiceResult.failure("Teacher password could not be updated.");
-                    }
+                if (!updateTeacherPassword(connection, teacherId, passwordHash)) {
+                    rollbackQuietly(connection);
+                    return ServiceResult.failure("Teacher password could not be updated.");
                 }
 
-                emailLogId = insertTeacherEmailLog(connection, teacherId, teacherRow.email, temporaryPassword, true);
-                insertAuditLog(connection, actorUserId, auditActionType, String.valueOf(teacherId),
-                        null,
-                        buildTeacherJson(teacherRow.fullName, teacherRow.email, teacherRow.accountStatus),
-                        auditNote);
+                ServiceResult<Integer> emailLogResult = queueTeacherPasswordEmail(connection, teacherId, teacherRow.email, true);
+                if (!emailLogResult.isSuccess() || emailLogResult.getData() == null) {
+                    rollbackQuietly(connection);
+                    return ServiceResult.failure("Could not update the teacher password.");
+                }
+
+                ServiceResult<Void> auditResult = auditLogService.logAction(connection, actorUserId,
+                        auditActionType, "TEACHER", String.valueOf(teacherId),
+                        null, buildTeacherJson(teacherRow.fullName, teacherRow.email, teacherRow.accountStatus), auditNote);
+                if (!auditResult.isSuccess()) {
+                    rollbackQuietly(connection);
+                    return ServiceResult.failure("Could not update the teacher password.");
+                }
+
                 connection.commit();
+                return ServiceResult.success("Teacher password saved.",
+                        new TeacherPasswordChangeResult(teacherRow, temporaryPassword, emailLogResult.getData()));
             } catch (SQLException ex) {
                 rollbackQuietly(connection);
                 return ServiceResult.failure("Could not update the teacher password.");
@@ -444,20 +481,6 @@ public final class TeacherService {
         } catch (SQLException ex) {
             return ServiceResult.failure("Could not update the teacher password.");
         }
-
-        ResendEmailClient.EmailSendResult emailResult = resendEmailClient.sendTeacherPasswordEmail(
-                teacherRow.email, teacherRow.fullName, temporaryPassword, true);
-
-        if (emailResult.isSuccess()) {
-            updateEmailLogSent(emailLogId, emailResult.getProviderMessageId());
-            return ServiceResult.success(successMessagePrefix + teacherRow.fullName + ".", null);
-        }
-
-        updateEmailLogFailed(emailLogId, emailResult.getMessage());
-        return ServiceResult.warning(
-                "Password was changed for " + teacherRow.fullName + ", but the email could not be sent yet.",
-                null
-        );
     }
 
     private TeacherProfile loadTeacherProfileOrFallback(int teacherId, String fullName, String email) {
@@ -528,68 +551,22 @@ public final class TeacherService {
         }
     }
 
-    private long insertTeacherEmailLog(Connection connection, long teacherUserId, String recipientEmail,
-            String temporaryPassword, boolean resetMode) throws SQLException {
-        String subject = resetMode ? "Teacher password reset" : "Your QR Attend teacher account";
-        String preview = SecurityUtil.safePreview(resetMode
-                ? "Teacher password reset email queued."
-                : "Teacher welcome email queued.");
-
-        try (PreparedStatement statement = connection.prepareStatement(INSERT_EMAIL_LOG_SQL, Statement.RETURN_GENERATED_KEYS)) {
-            statement.setString(1, recipientEmail);
-            statement.setString(2, resetMode ? "PASSWORD_RESET" : "TEACHER_PASSWORD");
-            statement.setLong(3, teacherUserId);
-            statement.setString(4, subject);
-            statement.setString(5, preview);
-            statement.executeUpdate();
-            try (ResultSet keys = statement.getGeneratedKeys()) {
-                if (!keys.next()) {
-                    throw new SQLException("Email log insert did not return a generated key.");
-                }
-                return keys.getLong(1);
-            }
+    private boolean updateTeacherPassword(Connection connection, int teacherId, String passwordHash) throws SQLException {
+        try (PreparedStatement update = connection.prepareStatement(UPDATE_PASSWORD_SQL)) {
+            update.setString(1, passwordHash);
+            update.setInt(2, teacherId);
+            return update.executeUpdate() > 0;
         }
     }
 
-    private void insertAuditLog(Connection connection, int actorUserId, String actionType, String entityId,
-            String oldValuesJson, String newValuesJson, String notes) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(INSERT_AUDIT_LOG_SQL)) {
-            statement.setInt(1, actorUserId);
-            statement.setString(2, actionType);
-            statement.setString(3, entityId);
-            statement.setString(4, oldValuesJson);
-            statement.setString(5, newValuesJson);
-            statement.setString(6, notes);
-            statement.executeUpdate();
+    private ServiceResult<Integer> queueTeacherPasswordEmail(Connection connection, int teacherId, String recipientEmail,
+            boolean resetMode) {
+        ServiceResult<ppb.qrattend.model.AppDomain.EmailDispatch> emailLogResult
+                = emailDispatchService.queueTeacherPasswordEmail(connection, teacherId, recipientEmail, resetMode);
+        if (!emailLogResult.isSuccess() || emailLogResult.getData() == null) {
+            return ServiceResult.failure("Could not queue the teacher email.");
         }
-    }
-
-    private void updateEmailLogSent(long emailLogId, String providerMessageId) {
-        if (!databaseManager.isReady()) {
-            return;
-        }
-        try (Connection connection = databaseManager.openConnection();
-                PreparedStatement statement = connection.prepareStatement(UPDATE_EMAIL_SENT_SQL)) {
-            statement.setString(1, providerMessageId == null ? "" : providerMessageId);
-            statement.setLong(2, emailLogId);
-            statement.executeUpdate();
-        } catch (SQLException ex) {
-            // Keep the teacher creation/reset committed even if the follow-up log update fails.
-        }
-    }
-
-    private void updateEmailLogFailed(long emailLogId, String errorMessage) {
-        if (!databaseManager.isReady()) {
-            return;
-        }
-        try (Connection connection = databaseManager.openConnection();
-                PreparedStatement statement = connection.prepareStatement(UPDATE_EMAIL_FAILED_SQL)) {
-            statement.setString(1, truncate(errorMessage, 1000));
-            statement.setLong(2, emailLogId);
-            statement.executeUpdate();
-        } catch (SQLException ex) {
-            // Keep the teacher creation/reset committed even if the follow-up log update fails.
-        }
+        return ServiceResult.success("Teacher email queued.", emailLogResult.getData().getId());
     }
 
     private void rollbackQuietly(Connection connection) {
@@ -672,13 +649,6 @@ public final class TeacherService {
         return builder.toString();
     }
 
-    private String truncate(String value, int maxLength) {
-        if (value == null) {
-            return "";
-        }
-        return value.length() <= maxLength ? value : value.substring(0, maxLength);
-    }
-
     private static final class TeacherAccountRow {
 
         private final int userId;
@@ -691,6 +661,49 @@ public final class TeacherService {
             this.fullName = fullName;
             this.email = email;
             this.accountStatus = accountStatus;
+        }
+    }
+
+    private static final class TeacherDraft {
+
+        private final String fullName;
+        private final String email;
+        private final String temporaryPassword;
+        private final String passwordHash;
+
+        private TeacherDraft(String fullName, String email, String temporaryPassword, String passwordHash) {
+            this.fullName = fullName;
+            this.email = email;
+            this.temporaryPassword = temporaryPassword;
+            this.passwordHash = passwordHash;
+        }
+    }
+
+    private static final class TeacherCreateResult {
+
+        private final int teacherId;
+        private final String fullName;
+        private final String email;
+        private final int emailLogId;
+
+        private TeacherCreateResult(int teacherId, String fullName, String email, int emailLogId) {
+            this.teacherId = teacherId;
+            this.fullName = fullName;
+            this.email = email;
+            this.emailLogId = emailLogId;
+        }
+    }
+
+    private static final class TeacherPasswordChangeResult {
+
+        private final TeacherAccountRow teacher;
+        private final String temporaryPassword;
+        private final int emailLogId;
+
+        private TeacherPasswordChangeResult(TeacherAccountRow teacher, String temporaryPassword, int emailLogId) {
+            this.teacher = teacher;
+            this.temporaryPassword = temporaryPassword;
+            this.emailLogId = emailLogId;
         }
     }
 }

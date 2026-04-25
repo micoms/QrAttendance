@@ -162,35 +162,6 @@ public final class StudentService {
               AND is_active = 1
             """;
 
-    private static final String INSERT_EMAIL_LOG_SQL = """
-            INSERT INTO email_dispatch_logs
-                (recipient_email, email_type, related_student_pk, subject_line, message_preview, delivery_status)
-            VALUES (?, ?, ?, ?, ?, 'QUEUED')
-            """;
-
-    private static final String INSERT_AUDIT_LOG_SQL = """
-            INSERT INTO audit_logs
-                (actor_user_id, action_type, entity_type, entity_id, old_values_json, new_values_json, notes, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            """;
-
-    private static final String UPDATE_EMAIL_SENT_SQL = """
-            UPDATE email_dispatch_logs
-            SET delivery_status = 'SENT',
-                provider_message_id = ?,
-                error_message = NULL,
-                sent_at = CURRENT_TIMESTAMP
-            WHERE email_id = ?
-            """;
-
-    private static final String UPDATE_EMAIL_FAILED_SQL = """
-            UPDATE email_dispatch_logs
-            SET delivery_status = 'FAILED',
-                error_message = ?,
-                sent_at = NULL
-            WHERE email_id = ?
-            """;
-
     private static final String UPDATE_STUDENT_QR_STATUS_SQL = """
             UPDATE student_profiles
             SET qr_status = ?,
@@ -320,14 +291,23 @@ public final class StudentService {
 
     private final DatabaseManager databaseManager;
     private final ResendEmailClient resendEmailClient;
+    private final AuditLogService auditLogService;
+    private final EmailDispatchService emailDispatchService;
 
     public StudentService() {
         this(DatabaseManager.fromDefaultConfig(), ResendEmailClient.createDefault());
     }
 
     public StudentService(DatabaseManager databaseManager, ResendEmailClient resendEmailClient) {
+        this(databaseManager, resendEmailClient, new AuditLogService(databaseManager), new EmailDispatchService(databaseManager));
+    }
+
+    public StudentService(DatabaseManager databaseManager, ResendEmailClient resendEmailClient,
+            AuditLogService auditLogService, EmailDispatchService emailDispatchService) {
         this.databaseManager = databaseManager;
         this.resendEmailClient = resendEmailClient;
+        this.auditLogService = auditLogService;
+        this.emailDispatchService = emailDispatchService;
     }
 
     public boolean isReady() {
@@ -408,6 +388,55 @@ public final class StudentService {
 
     public ServiceResult<StudentProfile> createStudentProfileByAdmin(int actorUserId, int teacherId, String sectionName,
             String studentCode, String fullName, String email) {
+        ServiceResult<StudentCreateDraft> draftResult = prepareStudentCreateDraft(
+                actorUserId, teacherId, sectionName, studentCode, fullName, email);
+        if (!draftResult.isSuccess() || draftResult.getData() == null) {
+            return ServiceResult.failure(draftResult.getMessage());
+        }
+
+        StudentCreateDraft draft = draftResult.getData();
+        ServiceResult<StudentCreateResult> saveResult = saveStudentProfileByAdmin(draft);
+        if (!saveResult.isSuccess() || saveResult.getData() == null) {
+            return ServiceResult.failure(saveResult.getMessage());
+        }
+
+        return sendStudentQrEmail(saveResult.getData(), draft.qrToken, false,
+                "Student added to " + draft.sectionName + " and QR email sent.",
+                "Student was added, but the QR email could not be sent yet.");
+    }
+
+    public ServiceResult<Void> resendStudentQr(int teacherId, String studentCode) {
+        ServiceResult<StudentQrRefreshResult> refreshResult = saveStudentQrRefresh(teacherId, studentCode);
+        if (!refreshResult.isSuccess() || refreshResult.getData() == null) {
+            return ServiceResult.failure(refreshResult.getMessage());
+        }
+
+        StudentQrRefreshResult refresh = refreshResult.getData();
+        ResendEmailClient.EmailSendResult emailResult = resendEmailClient.sendStudentQrEmail(
+                refresh.email, refresh.fullName, refresh.studentCode, refresh.qrToken, true);
+
+        if (emailResult.isSuccess()) {
+            emailDispatchService.markEmailSentQuietly(refresh.emailLogId, emailResult.getProviderMessageId());
+            updateStudentQrStatus(refresh.studentPk, EmailStatus.SENT);
+            updateQrTokenEmailedAt(refresh.qrId);
+            return ServiceResult.success("QR email re-sent to " + refresh.fullName + ".", null);
+        }
+
+        emailDispatchService.markEmailFailedQuietly(refresh.emailLogId, emailResult.getMessage());
+        updateStudentQrStatus(refresh.studentPk, EmailStatus.FAILED);
+        return ServiceResult.warning("The QR code was updated, but the email could not be sent yet.", null);
+    }
+
+    public ServiceResult<String> generatePermanentQrToken(String studentCode) {
+        String normalizedStudentCode = normalizeStudentCode(studentCode);
+        if (normalizedStudentCode.isBlank()) {
+            return ServiceResult.failure("Student ID is required.");
+        }
+        return ServiceResult.success("QR code created.", SecurityUtil.generateOpaqueToken());
+    }
+
+    private ServiceResult<StudentCreateDraft> prepareStudentCreateDraft(int actorUserId, int teacherId, String sectionName,
+            String studentCode, String fullName, String email) {
         if (!databaseManager.isReady()) {
             return ServiceResult.failure(databaseManager.getStatusMessage());
         }
@@ -435,53 +464,55 @@ public final class StudentService {
             return ServiceResult.failure(qrTokenResult.getMessage());
         }
 
-        String qrToken = qrTokenResult.getData();
-        String tokenHash = SecurityUtil.sha256Hex(qrToken);
-        long studentPk;
-        long qrId;
-        long emailLogId;
+        return ServiceResult.success("Student details are ready.",
+                new StudentCreateDraft(actorUserId, teacherId, normalizedSection, normalizedStudentCode,
+                        normalizedName, normalizedEmail, qrTokenResult.getData()));
+    }
 
+    private ServiceResult<StudentCreateResult> saveStudentProfileByAdmin(StudentCreateDraft draft) {
         try (Connection connection = databaseManager.openConnection()) {
             connection.setAutoCommit(false);
             try {
-                UserAccountRow admin = loadUser(connection, actorUserId, "ADMIN");
-                if (admin == null) {
-                    connection.rollback();
-                    return ServiceResult.failure("Admin account was not found.");
-                }
-                if (!"ACTIVE".equalsIgnoreCase(admin.accountStatus)) {
-                    connection.rollback();
-                    return ServiceResult.failure("This admin account is not active.");
+                ServiceResult<Void> actorCheck = validateStudentActors(connection, draft.actorUserId, draft.teacherId);
+                if (!actorCheck.isSuccess()) {
+                    rollbackQuietly(connection);
+                    return ServiceResult.failure(actorCheck.getMessage());
                 }
 
-                UserAccountRow teacher = loadUser(connection, teacherId, "TEACHER");
-                if (teacher == null) {
-                    connection.rollback();
-                    return ServiceResult.failure("Assigned teacher account was not found.");
-                }
-                if (!"ACTIVE".equalsIgnoreCase(teacher.accountStatus)) {
-                    connection.rollback();
-                    return ServiceResult.failure("Assigned teacher account is not active.");
-                }
-
-                if (studentCodeExists(connection, normalizedStudentCode)) {
-                    connection.rollback();
+                if (studentCodeExists(connection, draft.studentCode)) {
+                    rollbackQuietly(connection);
                     return ServiceResult.failure("That student ID already exists.");
                 }
-                if (studentEmailExists(connection, normalizedEmail)) {
-                    connection.rollback();
+                if (studentEmailExists(connection, draft.email)) {
+                    rollbackQuietly(connection);
                     return ServiceResult.failure("That student email is already registered.");
                 }
 
-                studentPk = insertStudentProfile(connection, teacherId, actorUserId, normalizedStudentCode, normalizedSection, normalizedName, normalizedEmail);
-                insertTeacherAssignment(connection, teacherId, studentPk);
-                qrId = insertQrToken(connection, studentPk, tokenHash);
-                emailLogId = insertStudentEmailLog(connection, studentPk, normalizedEmail, false);
-                insertAuditLog(connection, actorUserId, "STUDENT_CREATE", "STUDENT", String.valueOf(studentPk),
+                long studentPk = insertStudentProfile(connection, draft.teacherId, draft.actorUserId,
+                        draft.studentCode, draft.sectionName, draft.fullName, draft.email);
+                insertTeacherAssignment(connection, draft.teacherId, studentPk);
+                long qrId = insertQrToken(connection, studentPk, SecurityUtil.sha256Hex(draft.qrToken));
+
+                ServiceResult<Integer> emailLogResult = queueStudentQrEmail(connection, (int) studentPk, draft.email, false);
+                if (!emailLogResult.isSuccess() || emailLogResult.getData() == null) {
+                    rollbackQuietly(connection);
+                    return ServiceResult.failure("Could not create the student record.");
+                }
+
+                ServiceResult<Void> auditResult = auditLogService.logAction(connection, draft.actorUserId,
+                        "STUDENT_CREATE", "STUDENT", String.valueOf(studentPk),
                         null,
-                        buildStudentJson(normalizedStudentCode, normalizedSection, normalizedName, normalizedEmail, "QUEUED", teacherId),
+                        buildStudentJson(draft.studentCode, draft.sectionName, draft.fullName, draft.email, "QUEUED", draft.teacherId),
                         "Student profile created by admin and assigned to teacher section.");
+                if (!auditResult.isSuccess()) {
+                    rollbackQuietly(connection);
+                    return ServiceResult.failure("Could not create the student record.");
+                }
+
                 connection.commit();
+                return ServiceResult.success("Student record saved.",
+                        new StudentCreateResult((int) studentPk, draft.teacherId, draft.sectionName, draft.studentCode,
+                                draft.fullName, draft.email, emailLogResult.getData(), qrId));
             } catch (SQLException ex) {
                 rollbackQuietly(connection);
                 return ServiceResult.failure("Could not create the student record.");
@@ -491,25 +522,30 @@ public final class StudentService {
         } catch (SQLException ex) {
             return ServiceResult.failure("Could not create the student record.");
         }
-
-        ResendEmailClient.EmailSendResult emailResult = resendEmailClient.sendStudentQrEmail(
-                normalizedEmail, normalizedName, normalizedStudentCode, qrToken, false);
-
-        if (emailResult.isSuccess()) {
-            updateEmailLogSent(emailLogId, emailResult.getProviderMessageId());
-            updateStudentQrStatus(studentPk, EmailStatus.SENT);
-            updateQrTokenEmailedAt(qrId);
-            StudentProfile profile = loadStudentProfileOrFallback(teacherId, normalizedStudentCode, normalizedSection, normalizedName, normalizedEmail, EmailStatus.SENT);
-            return ServiceResult.success("Student added to " + normalizedSection + " and QR email sent.", profile);
-        }
-
-        updateEmailLogFailed(emailLogId, emailResult.getMessage());
-        updateStudentQrStatus(studentPk, EmailStatus.FAILED);
-        StudentProfile profile = loadStudentProfileOrFallback(teacherId, normalizedStudentCode, normalizedSection, normalizedName, normalizedEmail, EmailStatus.FAILED);
-        return ServiceResult.warning("Student was added, but the QR email could not be sent yet.", profile);
     }
 
-    public ServiceResult<Void> resendStudentQr(int teacherId, String studentCode) {
+    private ServiceResult<StudentProfile> sendStudentQrEmail(StudentCreateResult created, String qrToken, boolean resend,
+            String successMessage, String warningMessage) {
+        ResendEmailClient.EmailSendResult emailResult = resendEmailClient.sendStudentQrEmail(
+                created.email, created.fullName, created.studentCode, qrToken, resend);
+
+        if (emailResult.isSuccess()) {
+            emailDispatchService.markEmailSentQuietly(created.emailLogId, emailResult.getProviderMessageId());
+            updateStudentQrStatus(created.studentPk, EmailStatus.SENT);
+            updateQrTokenEmailedAt(created.qrId);
+            StudentProfile profile = loadStudentProfileOrFallback(created.teacherId, created.studentCode,
+                    created.sectionName, created.fullName, created.email, EmailStatus.SENT);
+            return ServiceResult.success(successMessage, profile);
+        }
+
+        emailDispatchService.markEmailFailedQuietly(created.emailLogId, emailResult.getMessage());
+        updateStudentQrStatus(created.studentPk, EmailStatus.FAILED);
+        StudentProfile profile = loadStudentProfileOrFallback(created.teacherId, created.studentCode,
+                created.sectionName, created.fullName, created.email, EmailStatus.FAILED);
+        return ServiceResult.warning(warningMessage, profile);
+    }
+
+    private ServiceResult<StudentQrRefreshResult> saveStudentQrRefresh(int teacherId, String studentCode) {
         if (!databaseManager.isReady()) {
             return ServiceResult.failure(databaseManager.getStatusMessage());
         }
@@ -522,39 +558,47 @@ public final class StudentService {
             return ServiceResult.failure("Student ID is required.");
         }
 
-        StudentTokenRow studentRow;
-        long emailLogId;
-        long newQrId;
-        String qrToken;
         try (Connection connection = databaseManager.openConnection()) {
             connection.setAutoCommit(false);
             try {
-                UserAccountRow teacher = loadUser(connection, teacherId, "TEACHER");
+                UserAccountRow teacher = loadActiveUser(connection, teacherId, "TEACHER", "Assigned teacher");
                 if (teacher == null) {
-                    connection.rollback();
+                    rollbackQuietly(connection);
                     return ServiceResult.failure("Assigned teacher account was not found.");
                 }
-                if (!"ACTIVE".equalsIgnoreCase(teacher.accountStatus)) {
-                    connection.rollback();
-                    return ServiceResult.failure("This teacher account is not active.");
-                }
 
-                studentRow = loadStudentToken(connection, teacherId, normalizedStudentCode);
+                StudentTokenRow studentRow = loadStudentToken(connection, teacherId, normalizedStudentCode);
                 if (studentRow == null) {
-                    connection.rollback();
+                    rollbackQuietly(connection);
                     return ServiceResult.failure("Student not found for this teacher list.");
                 }
 
-                qrToken = SecurityUtil.generateOpaqueToken();
+                String qrToken = SecurityUtil.generateOpaqueToken();
                 deactivateActiveQrTokens(connection, studentRow.studentPk);
-                newQrId = insertQrToken(connection, studentRow.studentPk, SecurityUtil.sha256Hex(qrToken));
+                long qrId = insertQrToken(connection, studentRow.studentPk, SecurityUtil.sha256Hex(qrToken));
                 updateStudentQrStatus(connection, studentRow.studentPk, EmailStatus.QUEUED);
-                emailLogId = insertStudentEmailLog(connection, studentRow.studentPk, studentRow.email, true);
-                insertAuditLog(connection, teacherId, "STUDENT_QR_RESEND", "STUDENT", String.valueOf(studentRow.studentPk),
+
+                ServiceResult<Integer> emailLogResult = queueStudentQrEmail(connection, (int) studentRow.studentPk, studentRow.email, true);
+                if (!emailLogResult.isSuccess() || emailLogResult.getData() == null) {
+                    rollbackQuietly(connection);
+                    return ServiceResult.failure("Could not send the QR code again.");
+                }
+
+                ServiceResult<Void> auditResult = auditLogService.logAction(connection, teacherId,
+                        "STUDENT_QR_RESEND", "STUDENT", String.valueOf(studentRow.studentPk),
                         null,
-                        buildStudentJson(studentRow.studentCode, studentRow.sectionName, studentRow.fullName, studentRow.email, "QUEUED", teacherId),
+                        buildStudentJson(studentRow.studentCode, studentRow.sectionName, studentRow.fullName,
+                                studentRow.email, "QUEUED", teacherId),
                         "Student QR was re-sent from the current teacher list.");
+                if (!auditResult.isSuccess()) {
+                    rollbackQuietly(connection);
+                    return ServiceResult.failure("Could not send the QR code again.");
+                }
+
                 connection.commit();
+                return ServiceResult.success("Student QR updated.",
+                        new StudentQrRefreshResult(studentRow.studentPk, studentRow.studentCode, studentRow.fullName,
+                                studentRow.email, emailLogResult.getData(), qrId, qrToken));
             } catch (SQLException ex) {
                 rollbackQuietly(connection);
                 return ServiceResult.failure("Could not send the QR code again.");
@@ -564,28 +608,6 @@ public final class StudentService {
         } catch (SQLException ex) {
             return ServiceResult.failure("Could not send the QR code again.");
         }
-
-        ResendEmailClient.EmailSendResult emailResult = resendEmailClient.sendStudentQrEmail(
-                studentRow.email, studentRow.fullName, studentRow.studentCode, qrToken, true);
-
-        if (emailResult.isSuccess()) {
-            updateEmailLogSent(emailLogId, emailResult.getProviderMessageId());
-            updateStudentQrStatus(studentRow.studentPk, EmailStatus.SENT);
-            updateQrTokenEmailedAt(newQrId);
-            return ServiceResult.success("QR email re-sent to " + studentRow.fullName + ".", null);
-        }
-
-        updateEmailLogFailed(emailLogId, emailResult.getMessage());
-        updateStudentQrStatus(studentRow.studentPk, EmailStatus.FAILED);
-        return ServiceResult.warning("The QR code was updated, but the email could not be sent yet.", null);
-    }
-
-    public ServiceResult<String> generatePermanentQrToken(String studentCode) {
-        String normalizedStudentCode = normalizeStudentCode(studentCode);
-        if (normalizedStudentCode.isBlank()) {
-            return ServiceResult.failure("Student ID is required.");
-        }
-        return ServiceResult.success("QR code created.", SecurityUtil.generateOpaqueToken());
     }
 
     public ServiceResult<Void> submitStudentRemovalRequest(int teacherId, String studentCode, String reason) {
@@ -625,21 +647,26 @@ public final class StudentService {
                 }
 
                 long requestId = insertRemovalRequest(connection, teacherId, studentRow.studentPk, normalizedReason);
-                insertAuditLog(connection, teacherId, "STUDENT_REMOVAL_REQUEST", "STUDENT_REMOVAL_REQUEST", String.valueOf(requestId),
+                ServiceResult<Void> auditResult = auditLogService.logAction(connection, teacherId,
+                        "STUDENT_REMOVAL_REQUEST", "STUDENT_REMOVAL_REQUEST", String.valueOf(requestId),
                         null,
                         "{\"student_code\":\"" + escapeJson(studentRow.studentCode) + "\",\"section_name\":\"" + escapeJson(studentRow.sectionName)
                         + "\",\"reason\":\"" + escapeJson(normalizedReason) + "\"}",
                         "Teacher requested removal of the student from the roster.");
+                if (!auditResult.isSuccess()) {
+                    rollbackQuietly(connection);
+                    return ServiceResult.failure("Could not submit the removal request.");
+                }
                 connection.commit();
                 return ServiceResult.success("Removal request sent to admin for approval.", null);
             } catch (SQLException ex) {
                 rollbackQuietly(connection);
-                return ServiceResult.failure("Could not submit the removal request: " + ex.getMessage());
+                return ServiceResult.failure("Could not submit the removal request.");
             } finally {
                 restoreAutoCommit(connection);
             }
         } catch (SQLException ex) {
-            return ServiceResult.failure("Could not submit the removal request: " + ex.getMessage());
+            return ServiceResult.failure("Could not submit the removal request.");
         }
     }
 
@@ -688,7 +715,7 @@ public final class StudentService {
                     deactivateAssignment(connection, requestRow.teacherId, requestRow.studentPk);
                 }
                 updateRemovalRequestStatus(connection, requestId, approve ? "APPROVED" : "REJECTED", reviewerUserId);
-                insertAuditLog(connection, reviewerUserId,
+                ServiceResult<Void> auditResult = auditLogService.logAction(connection, reviewerUserId,
                         approve ? "STUDENT_REMOVAL_APPROVE" : "STUDENT_REMOVAL_REJECT",
                         "STUDENT_REMOVAL_REQUEST",
                         String.valueOf(requestId),
@@ -697,16 +724,20 @@ public final class StudentService {
                         approve
                                 ? "Admin approved the teacher request to remove the student from the roster."
                                 : "Admin rejected the teacher request to remove the student from the roster.");
+                if (!auditResult.isSuccess()) {
+                    rollbackQuietly(connection);
+                    return ServiceResult.failure("Could not review the removal request.");
+                }
                 connection.commit();
                 return ServiceResult.success(approve ? "Student removal approved." : "Student removal request rejected.", null);
             } catch (SQLException ex) {
                 rollbackQuietly(connection);
-                return ServiceResult.failure("Could not review the removal request: " + ex.getMessage());
+                return ServiceResult.failure("Could not review the removal request.");
             } finally {
                 restoreAutoCommit(connection);
             }
         } catch (SQLException ex) {
-            return ServiceResult.failure("Could not review the removal request: " + ex.getMessage());
+            return ServiceResult.failure("Could not review the removal request.");
         }
     }
 
@@ -747,6 +778,33 @@ public final class StudentService {
                         resultSet.getString("account_status")
                 );
             }
+        }
+    }
+
+    private UserAccountRow loadActiveUser(Connection connection, int userId, String role, String label) throws SQLException {
+        UserAccountRow user = loadUser(connection, userId, role);
+        if (user == null) {
+            return null;
+        }
+        if (!"ACTIVE".equalsIgnoreCase(user.accountStatus)) {
+            throw new SQLException(label + " account is not active.");
+        }
+        return user;
+    }
+
+    private ServiceResult<Void> validateStudentActors(Connection connection, int adminUserId, int teacherId) {
+        try {
+            UserAccountRow admin = loadActiveUser(connection, adminUserId, "ADMIN", "Admin");
+            if (admin == null) {
+                return ServiceResult.failure("Admin account was not found.");
+            }
+            UserAccountRow teacher = loadActiveUser(connection, teacherId, "TEACHER", "Assigned teacher");
+            if (teacher == null) {
+                return ServiceResult.failure("Assigned teacher account was not found.");
+            }
+            return ServiceResult.success("Student actors are valid.", null);
+        } catch (SQLException ex) {
+            return ServiceResult.failure(ex.getMessage());
         }
     }
 
@@ -816,40 +874,14 @@ public final class StudentService {
         }
     }
 
-    private long insertStudentEmailLog(Connection connection, long studentPk, String recipientEmail,
-            boolean resendMode) throws SQLException {
-        String subject = resendMode ? "QR code resend" : "Your attendance QR code";
-        String preview = SecurityUtil.safePreview(resendMode
-                ? "Student QR code email queued again."
-                : "Student QR code email queued.");
-        try (PreparedStatement statement = connection.prepareStatement(INSERT_EMAIL_LOG_SQL, Statement.RETURN_GENERATED_KEYS)) {
-            statement.setString(1, recipientEmail);
-            statement.setString(2, resendMode ? "QR_RESEND" : "STUDENT_QR");
-            statement.setLong(3, studentPk);
-            statement.setString(4, subject);
-            statement.setString(5, preview);
-            statement.executeUpdate();
-            try (ResultSet keys = statement.getGeneratedKeys()) {
-                if (!keys.next()) {
-                    throw new SQLException("Email log insert did not return a generated key.");
-                }
-                return keys.getLong(1);
-            }
+    private ServiceResult<Integer> queueStudentQrEmail(Connection connection, int studentPk, String recipientEmail,
+            boolean resendMode) {
+        ServiceResult<ppb.qrattend.model.AppDomain.EmailDispatch> emailLogResult =
+                emailDispatchService.queueStudentQrEmail(connection, studentPk, recipientEmail, resendMode);
+        if (!emailLogResult.isSuccess() || emailLogResult.getData() == null) {
+            return ServiceResult.failure("Could not queue the student email.");
         }
-    }
-
-    private void insertAuditLog(Connection connection, int actorUserId, String actionType, String entityType, String entityId,
-            String oldValuesJson, String newValuesJson, String notes) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(INSERT_AUDIT_LOG_SQL)) {
-            statement.setInt(1, actorUserId);
-            statement.setString(2, actionType);
-            statement.setString(3, entityType);
-            statement.setString(4, entityId);
-            statement.setString(5, oldValuesJson);
-            statement.setString(6, newValuesJson);
-            statement.setString(7, notes);
-            statement.executeUpdate();
-        }
+        return ServiceResult.success("Student email queued.", emailLogResult.getData().getId());
     }
 
     private StudentTokenRow loadStudentToken(Connection connection, int teacherId, String studentCode) throws SQLException {
@@ -924,26 +956,6 @@ public final class StudentService {
             statement.setInt(1, teacherId);
             statement.setLong(2, studentPk);
             statement.executeUpdate();
-        }
-    }
-
-    private void updateEmailLogSent(long emailLogId, String providerMessageId) {
-        try (Connection connection = databaseManager.openConnection();
-                PreparedStatement statement = connection.prepareStatement(UPDATE_EMAIL_SENT_SQL)) {
-            statement.setString(1, safe(providerMessageId));
-            statement.setLong(2, emailLogId);
-            statement.executeUpdate();
-        } catch (SQLException ignored) {
-        }
-    }
-
-    private void updateEmailLogFailed(long emailLogId, String errorMessage) {
-        try (Connection connection = databaseManager.openConnection();
-                PreparedStatement statement = connection.prepareStatement(UPDATE_EMAIL_FAILED_SQL)) {
-            statement.setString(1, safe(errorMessage));
-            statement.setLong(2, emailLogId);
-            statement.executeUpdate();
-        } catch (SQLException ignored) {
         }
     }
 
@@ -1096,6 +1108,74 @@ public final class StudentService {
 
     private String safe(String value) {
         return value == null ? "" : value.trim();
+    }
+
+    private static final class StudentCreateDraft {
+
+        private final int actorUserId;
+        private final int teacherId;
+        private final String sectionName;
+        private final String studentCode;
+        private final String fullName;
+        private final String email;
+        private final String qrToken;
+
+        private StudentCreateDraft(int actorUserId, int teacherId, String sectionName, String studentCode,
+                String fullName, String email, String qrToken) {
+            this.actorUserId = actorUserId;
+            this.teacherId = teacherId;
+            this.sectionName = sectionName;
+            this.studentCode = studentCode;
+            this.fullName = fullName;
+            this.email = email;
+            this.qrToken = qrToken;
+        }
+    }
+
+    private static final class StudentCreateResult {
+
+        private final long studentPk;
+        private final int teacherId;
+        private final String sectionName;
+        private final String studentCode;
+        private final String fullName;
+        private final String email;
+        private final int emailLogId;
+        private final long qrId;
+
+        private StudentCreateResult(long studentPk, int teacherId, String sectionName, String studentCode,
+                String fullName, String email, int emailLogId, long qrId) {
+            this.studentPk = studentPk;
+            this.teacherId = teacherId;
+            this.sectionName = sectionName;
+            this.studentCode = studentCode;
+            this.fullName = fullName;
+            this.email = email;
+            this.emailLogId = emailLogId;
+            this.qrId = qrId;
+        }
+    }
+
+    private static final class StudentQrRefreshResult {
+
+        private final long studentPk;
+        private final String studentCode;
+        private final String fullName;
+        private final String email;
+        private final int emailLogId;
+        private final long qrId;
+        private final String qrToken;
+
+        private StudentQrRefreshResult(long studentPk, String studentCode, String fullName, String email,
+                int emailLogId, long qrId, String qrToken) {
+            this.studentPk = studentPk;
+            this.studentCode = studentCode;
+            this.fullName = fullName;
+            this.email = email;
+            this.emailLogId = emailLogId;
+            this.qrId = qrId;
+            this.qrToken = qrToken;
+        }
     }
 
     private static final class UserAccountRow {
