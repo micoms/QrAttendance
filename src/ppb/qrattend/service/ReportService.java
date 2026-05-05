@@ -26,6 +26,7 @@ public final class ReportService {
                 st.full_name AS student_name,
                 sec.section_name,
                 sub.subject_name,
+                u.full_name AS teacher_name,
                 ar.recorded_at,
                 ar.attendance_method,
                 ar.attendance_status,
@@ -39,6 +40,8 @@ public final class ReportService {
                 ON sec.section_id = st.section_id
             INNER JOIN subjects sub
                 ON sub.subject_id = sess.subject_id
+            INNER JOIN users u
+                ON u.user_id = sess.teacher_user_id
             %s
             ORDER BY ar.recorded_at DESC, ar.record_id DESC
             """;
@@ -157,6 +160,7 @@ public final class ReportService {
                 resultSet.getString("student_name"),
                 resultSet.getString("section_name"),
                 resultSet.getString("subject_name"),
+                resultSet.getString("teacher_name"),
                 resultSet.getTimestamp("recorded_at").toLocalDateTime(),
                 AttendanceMethod.valueOf(resultSet.getString("attendance_method")),
                 AttendanceStatus.valueOf(resultSet.getString("attendance_status")),
@@ -164,19 +168,27 @@ public final class ReportService {
         );
     }
 
-    public ServiceResult<Integer> exportCsv(List<AttendanceRecord> records, java.io.File file) {
+    public ServiceResult<Integer> exportCsv(List<AttendanceRecord> records, java.io.File file, boolean includeTeacher) {
         try (PrintWriter writer = new PrintWriter(file, StandardCharsets.UTF_8)) {
-            writer.println("Student ID,Student Name,Section,Subject,Date/Time,Method,Status,Note");
+            if (includeTeacher) {
+                writer.println("Teacher,Student ID,Student Name,Section,Subject,Date/Time,Method,Status,Note");
+            } else {
+                writer.println("Student ID,Student Name,Section,Subject,Date/Time,Method,Status,Note");
+            }
             int count = 0;
             for (AttendanceRecord record : records) {
-                String row = escapeCsv(record.studentCode())
-                        + "," + escapeCsv(record.studentName())
-                        + "," + escapeCsv(record.sectionName())
-                        + "," + escapeCsv(record.subjectName())
-                        + "," + escapeCsv(record.recordedAt().format(CoreModels.DATE_TIME_FORMAT))
-                        + "," + escapeCsv(record.method().getLabel())
-                        + "," + escapeCsv(record.status().getLabel())
-                        + "," + escapeCsv(record.note());
+                StringBuilder row = new StringBuilder();
+                if (includeTeacher) {
+                    row.append(escapeCsv(record.teacherName())).append(",");
+                }
+                row.append(escapeCsv(record.studentCode()))
+                        .append(",").append(escapeCsv(record.studentName()))
+                        .append(",").append(escapeCsv(record.sectionName()))
+                        .append(",").append(escapeCsv(record.subjectName()))
+                        .append(",").append(escapeCsv(record.recordedAt().format(CoreModels.DATE_TIME_FORMAT)))
+                        .append(",").append(escapeCsv(record.method().getLabel()))
+                        .append(",").append(escapeCsv(record.status().getLabel()))
+                        .append(",").append(escapeCsv(record.note()));
                 writer.println(row);
                 count++;
             }

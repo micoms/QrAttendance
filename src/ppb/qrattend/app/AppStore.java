@@ -301,8 +301,8 @@ public class AppStore {
         return handleWrite(attendanceService.markAllAbsent(teacherId));
     }
 
-    public ActionResult exportCsv(List<AttendanceRecord> records, java.io.File file) {
-        return handleWrite(reportService.exportCsv(records, file));
+    public ActionResult exportCsv(List<AttendanceRecord> records, java.io.File file, boolean includeTeacher) {
+        return handleWrite(reportService.exportCsv(records, file, includeTeacher));
     }
 
     public ActionResult renameSection(int sectionId, String newName) {

@@ -406,19 +406,21 @@ public final class CoreModels {
         private final String studentName;
         private final String sectionName;
         private final String subjectName;
+        private final String teacherName;
         private final LocalDateTime recordedAt;
         private final AttendanceMethod method;
         private final AttendanceStatus status;
         private final String note;
 
         public AttendanceRecord(int id, String studentCode, String studentName, String sectionName,
-                String subjectName, LocalDateTime recordedAt, AttendanceMethod method,
+                String subjectName, String teacherName, LocalDateTime recordedAt, AttendanceMethod method,
                 AttendanceStatus status, String note) {
             this.id = id;
             this.studentCode = studentCode;
             this.studentName = studentName;
             this.sectionName = sectionName;
             this.subjectName = subjectName;
+            this.teacherName = teacherName;
             this.recordedAt = recordedAt;
             this.method = method;
             this.status = status;
@@ -430,6 +432,7 @@ public final class CoreModels {
         public String studentName()        { return studentName; }
         public String sectionName()        { return sectionName; }
         public String subjectName()        { return subjectName; }
+        public String teacherName()        { return teacherName; }
         public LocalDateTime recordedAt()  { return recordedAt; }
         public AttendanceMethod method()   { return method; }
         public AttendanceStatus status()   { return status; }

@@ -94,7 +94,7 @@ final class ReportsScreen {
     }
 
     private static JPanel buildSummarySection(AppShell shell) {
-        Integer teacherId = shell.getCurrentUser().isAdmin() ? shell.getReportTeacherFilter() : shell.getCurrentUser().getUserId();
+        Integer teacherId = shell.getCurrentUser().isAdmin() ? shell.getReportTeacherFilter() : Integer.valueOf(shell.getCurrentUser().getUserId());
         ReportSummary summary = shell.getStore().getReportSummary(teacherId, shell.getReportSectionFilter(), shell.getReportSubjectFilter());
         if (summary == null) {
             summary = new ReportSummary(0, 0, 0, 0);
@@ -109,36 +109,56 @@ final class ReportsScreen {
     }
 
     private static JPanel buildRecordsSection(AppShell shell) {
-        Integer teacherId = shell.getCurrentUser().isAdmin() ? shell.getReportTeacherFilter() : shell.getCurrentUser().getUserId();
+        Integer teacherId = shell.getCurrentUser().isAdmin() ? shell.getReportTeacherFilter() : Integer.valueOf(shell.getCurrentUser().getUserId());
         List<AttendanceRecord> records = shell.getStore().getReportRecords(teacherId, shell.getReportSectionFilter(), shell.getReportSubjectFilter());
 
-        DefaultTableModel model = shell.createTableModel("Student", "Section", "Subject", "Time", "Method", "Status", "Note");
-        for (AttendanceRecord record : records) {
-            model.addRow(new Object[]{
-                record.studentName(),
-                record.sectionName(),
-                record.subjectName(),
-                record.recordedAt().format(ppb.qrattend.model.CoreModels.DATE_TIME_FORMAT),
-                record.method().getLabel(),
-                record.status().getLabel(),
-                record.note()
-            });
+        DefaultTableModel model;
+        if (shell.getCurrentUser().isAdmin()) {
+            model = shell.createTableModel("Teacher", "Student", "Section", "Subject", "Time", "Method", "Status", "Note");
+            for (AttendanceRecord record : records) {
+                model.addRow(new Object[]{
+                    record.teacherName(),
+                    record.studentName(),
+                    record.sectionName(),
+                    record.subjectName(),
+                    record.recordedAt().format(ppb.qrattend.model.CoreModels.DATE_TIME_FORMAT),
+                    record.method().getLabel(),
+                    record.status().getLabel(),
+                    record.note()
+                });
+            }
+        } else {
+            model = shell.createTableModel("Student", "Section", "Subject", "Time", "Method", "Status", "Note");
+            for (AttendanceRecord record : records) {
+                model.addRow(new Object[]{
+                    record.studentName(),
+                    record.sectionName(),
+                    record.subjectName(),
+                    record.recordedAt().format(ppb.qrattend.model.CoreModels.DATE_TIME_FORMAT),
+                    record.method().getLabel(),
+                    record.status().getLabel(),
+                    record.note()
+                });
+            }
         }
 
         JTable table = new JTable(model);
 
+        boolean isAdmin = shell.getCurrentUser().isAdmin();
         JButton exportButton = new JButton("Export CSV");
         AppTheme.styleSecondaryButton(exportButton);
         exportButton.addActionListener(event -> {
             javax.swing.JFileChooser chooser = new javax.swing.JFileChooser();
             chooser.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter("CSV files", "csv"));
+            String defaultName = "attendance_report_" + java.time.LocalDate.now() + ".csv";
+            chooser.setSelectedFile(new java.io.File(defaultName));
             int result = chooser.showSaveDialog(null);
             if (result == javax.swing.JFileChooser.APPROVE_OPTION) {
                 java.io.File file = chooser.getSelectedFile();
                 if (!file.getName().toLowerCase().endsWith(".csv")) {
                     file = new java.io.File(file.getAbsolutePath() + ".csv");
                 }
-                shell.showResult(shell.getStore().exportCsv(records, file));
+                shell.showResult(shell.getStore().exportCsv(records, file, isAdmin));
             }
         });
 
