@@ -60,7 +60,6 @@ final class AttendanceScreen {
 
     private static JPanel buildClassSection(AppShell shell, AttendanceSession session) {
         if (session.status() == SessionStatus.OPEN && !session.temporary()) {
-            // Scheduled class is open — show a clear confirmation with class details
             return shell.createSection("Step 1: Class Status", "Your scheduled class opened automatically.", AppFlowPanels.createSimpleList("Class is open", List.of(
                     "Section: " + session.sectionName(),
                     "Subject: " + session.subjectName(),

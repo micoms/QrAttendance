@@ -33,7 +33,6 @@ import javax.swing.table.JTableHeader;
 
 public final class AppTheme {
 
-    // --- Colour palette (same hues, slightly refined) ---
     public static final Color BRAND       = new Color(52, 168, 100);
     public static final Color BRAND_HOVER = new Color(40, 142, 84);
     public static final Color BRAND_DARK  = new Color(25, 72, 48);
@@ -49,7 +48,6 @@ public final class AppTheme {
     public static final Color DANGER      = new Color(172, 60, 54);
     public static final Color INFO        = new Color(44, 105, 190);
 
-    // Rounded corner radius constants
     public static final int RADIUS_SM = 8;
     public static final int RADIUS_MD = 12;
     public static final int RADIUS_LG = 16;
@@ -72,10 +70,6 @@ public final class AppTheme {
     public static Font bodyFont(float size) {
         return new Font("Segoe UI", Font.PLAIN, Math.round(size));
     }
-
-    // -------------------------------------------------------
-    //  Page / Section containers
-    // -------------------------------------------------------
 
     public static JPanel createPage() {
         JPanel panel = new JPanel();
@@ -113,10 +107,6 @@ public final class AppTheme {
         return container;
     }
 
-    // -------------------------------------------------------
-    //  Stat cards
-    // -------------------------------------------------------
-
     public static JPanel createStatCard(String label, String value, Color accent) {
         JPanel card = new RoundedPanel(RADIUS_MD, SURFACE);
         card.setLayout(new BorderLayout());
@@ -125,7 +115,6 @@ public final class AppTheme {
                 new EmptyBorder(16, 18, 16, 18)
         ));
 
-        // Left accent stripe
         JPanel stripe = new JPanel() {
             @Override
             protected void paintComponent(Graphics g) {
@@ -160,10 +149,6 @@ public final class AppTheme {
         return card;
     }
 
-    // -------------------------------------------------------
-    //  Pill badge
-    // -------------------------------------------------------
-
     public static JLabel createPill(String text, Color background, Color foreground) {
         JLabel label = new JLabel(text, SwingConstants.CENTER) {
             @Override
@@ -182,10 +167,6 @@ public final class AppTheme {
         label.setFont(bodyFont(11));
         return label;
     }
-
-    // -------------------------------------------------------
-    //  Button styles  (painted via custom JButton subclass)
-    // -------------------------------------------------------
 
     public static void stylePrimaryButton(AbstractButton button) {
         button.setFocusPainted(false);
@@ -254,10 +235,8 @@ public final class AppTheme {
         }
     }
 
-    // Internal helper: replaces the UI painter with a rounded-rect version
     private static void applyRoundedButtonPainter(AbstractButton button,
             Color normal, Color hover, Color fg, int arc) {
-        // Remove old painters first
         button.setUI(new javax.swing.plaf.basic.BasicButtonUI() {
             @Override
             public void paint(Graphics g, JComponent c) {
@@ -275,10 +254,6 @@ public final class AppTheme {
             }
         });
     }
-
-    // -------------------------------------------------------
-    //  Form fields
-    // -------------------------------------------------------
 
     public static void styleField(JTextField field) {
         field.setFont(bodyFont(13));
@@ -308,10 +283,6 @@ public final class AppTheme {
         combo.setBorder(new RoundedBorder(RADIUS_SM, BORDER, 1));
     }
 
-    // -------------------------------------------------------
-    //  Table
-    // -------------------------------------------------------
-
     public static void styleTable(JTable table) {
         table.setRowHeight(36);
         table.setShowHorizontalLines(true);
@@ -324,7 +295,6 @@ public final class AppTheme {
         table.setFont(bodyFont(12));
         table.setIntercellSpacing(new Dimension(0, 0));
 
-        // Alternating row striping via custom renderer
         table.setDefaultRenderer(Object.class, new DefaultTableCellRenderer() {
             @Override
             public Component getTableCellRendererComponent(JTable t, Object value,
@@ -373,10 +343,6 @@ public final class AppTheme {
         return scrollPane;
     }
 
-    // -------------------------------------------------------
-    //  Layout helpers
-    // -------------------------------------------------------
-
     public static JPanel stack(Component... components) {
         JPanel panel = new JPanel();
         panel.setOpaque(false);
@@ -422,11 +388,6 @@ public final class AppTheme {
         component.setMaximumSize(new Dimension(Integer.MAX_VALUE, Math.max(height, preferred.height)));
     }
 
-    // -------------------------------------------------------
-    //  Inner helpers: rounded panel, border, slim scrollbar
-    // -------------------------------------------------------
-
-    /** A JPanel that paints itself with rounded corners. */
     public static class RoundedPanel extends JPanel {
         private final int arc;
         private final Color bg;
@@ -448,7 +409,6 @@ public final class AppTheme {
         }
     }
 
-    /** A rounded-rect border with configurable radius, colour and thickness. */
     public static class RoundedBorder extends AbstractBorder {
         private final int arc;
         private final Color color;
@@ -477,14 +437,13 @@ public final class AppTheme {
         }
     }
 
-    /** Thin, minimal scrollbar UI. */
     public static class SlimScrollBarUI extends javax.swing.plaf.basic.BasicScrollBarUI {
         private static final int THUMB_W = 5;
 
         @Override
         protected void configureScrollBarColors() {
             thumbColor = new Color(180, 200, 188);
-            trackColor = new Color(243, 246, 244); // matches BACKGROUND, avoid alpha
+            trackColor = new Color(243, 246, 244);
         }
 
         @Override
@@ -518,7 +477,6 @@ public final class AppTheme {
 
         @Override
         protected void paintTrack(Graphics g, JComponent c, java.awt.Rectangle r) {
-            // no track painting
         }
     }
 }

@@ -131,7 +131,6 @@ final class AdminStudentsScreen {
 
         JTable table = new JTable(model);
 
-        // Inline edit form fields (initially hidden)
         JTextField editCodeField = shell.newTextField();
         JTextField editNameField = shell.newTextField();
         JTextField editEmailField = shell.newTextField();
@@ -153,7 +152,6 @@ final class AdminStudentsScreen {
         editForm.add(shell.labeledField("Action", saveButton));
         editForm.setVisible(false);
 
-        // Action buttons
         JButton resendButton = new JButton("Send Again");
         JButton editButton = new JButton("Edit");
         JButton deactivateButton = new JButton("Deactivate");
@@ -183,7 +181,6 @@ final class AdminStudentsScreen {
             editCodeField.setText(student.studentCode());
             editNameField.setText(student.fullName());
             editEmailField.setText(student.email());
-            // Select the matching section in the combo
             int sectionIndex = 0;
             for (int i = 0; i < sections.size(); i++) {
                 if (sections.get(i).id() == student.sectionId()) {

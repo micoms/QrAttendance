@@ -80,8 +80,6 @@ public class AppShell extends JPanel {
         if (mustChangePassword) {
             selectedView = "password_change";
         }
-        // Refresh the attendance page every 30 seconds so it can open the teacher's
-        // current class as soon as the saved class time starts.
         attendanceTimer = new Timer(30000, event -> {
             if ("attendance".equals(selectedView)) {
                 refreshSelectedView();
@@ -170,8 +168,6 @@ public class AppShell extends JPanel {
         logout.setMaximumSize(new Dimension(Integer.MAX_VALUE, 42));
         AppTheme.styleNavButton(logout, false);
         logout.addActionListener(event -> {
-            // Stop the refresh timer before handing control back to the login screen.
-            // Without this, multiple timers accumulate across login/logout cycles.
             attendanceTimer.stop();
             if (bannerClearTimer != null) {
                 bannerClearTimer.stop();
@@ -315,7 +311,7 @@ public class AppShell extends JPanel {
 
     public void openView(String viewKey) {
         if (mustChangePassword) {
-            return;  // block all navigation until password is changed
+            return;
         }
         if (!navigation.containsKey(viewKey)) {
             return;

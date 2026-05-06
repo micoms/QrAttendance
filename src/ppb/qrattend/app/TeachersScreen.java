@@ -72,7 +72,6 @@ final class TeachersScreen {
 
         JTable table = new JTable(model);
 
-        // Inline edit form fields (initially empty/hidden via label visibility)
         JTextField editNameField = shell.newTextField();
         JTextField editEmailField = shell.newTextField();
         JLabel editFormLabel = new JLabel("Edit teacher:");
@@ -90,7 +89,6 @@ final class TeachersScreen {
         editForm.add(shell.labeledField("Action", saveButton));
         editForm.setVisible(false);
 
-        // Action buttons
         JButton resendButton = new JButton("Send Again");
         JButton resetButton = new JButton("Reset Password");
         JButton editButton = new JButton("Edit");

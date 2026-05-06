@@ -29,7 +29,6 @@ public class ButtonOutLine extends JButton {
         Graphics2D g2 = (Graphics2D) g.create();
         g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
 
-        // Fill with semi-transparent white on hover/press
         if (getModel().isPressed()) {
             g2.setColor(new Color(255, 255, 255, 50));
             g2.fillRoundRect(0, 0, width, height, 10, 10);
@@ -38,7 +37,6 @@ public class ButtonOutLine extends JButton {
             g2.fillRoundRect(0, 0, width, height, 10, 10);
         }
 
-        // Outline
         g2.setColor(new Color(255, 255, 255, 180));
         g2.drawRoundRect(1, 1, width - 2, height - 2, 10, 10);
         g2.dispose();

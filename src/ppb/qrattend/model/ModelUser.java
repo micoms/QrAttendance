@@ -54,7 +54,6 @@ public class ModelUser {
     }
 
     public void setPassword(String password) {
-        // Session users no longer keep readable passwords in memory.
     }
 
     public AppDomain.UserRole getRole() {

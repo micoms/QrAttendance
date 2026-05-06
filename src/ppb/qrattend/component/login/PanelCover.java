@@ -36,7 +36,6 @@ public class PanelCover extends JPanel {
     }
 
     private void buildContent() {
-        // ---- TOP: Brand ----
         JPanel top = new JPanel();
         top.setOpaque(false);
         top.setLayout(new BoxLayout(top, BoxLayout.Y_AXIS));
@@ -53,7 +52,6 @@ public class PanelCover extends JPanel {
         top.add(tagline);
         add(top, BorderLayout.NORTH);
 
-        // ---- CENTER: Role info + features ----
         JPanel center = new JPanel();
         center.setOpaque(false);
         center.setLayout(new BoxLayout(center, BoxLayout.Y_AXIS));
@@ -74,7 +72,6 @@ public class PanelCover extends JPanel {
         center.add(bodyLabel);
         center.add(Box.createVerticalStrut(32));
 
-        // Feature list - ASCII only
         String[] features = {
             "Scan student QR codes in class",
             "Mark attendance without QR when needed",
@@ -98,7 +95,6 @@ public class PanelCover extends JPanel {
 
         add(center, BorderLayout.CENTER);
 
-        // ---- BOTTOM: Toggle button ----
         toggleButton.setForeground(Color.WHITE);
         toggleButton.setBackground(Color.WHITE);
         toggleButton.setText("Go to Admin Sign In");
@@ -130,7 +126,6 @@ public class PanelCover extends JPanel {
     protected void paintComponent(Graphics g) {
         Graphics2D g2 = (Graphics2D) g.create();
         g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-        // Rich diagonal gradient — same green palette
         GradientPaint gp = new GradientPaint(
                 0, 0,              new Color(45, 152, 95),
                 getWidth(), getHeight(), new Color(18, 60, 38)
@@ -138,12 +133,10 @@ public class PanelCover extends JPanel {
         g2.setPaint(gp);
         g2.fillRect(0, 0, getWidth(), getHeight());
 
-        // Decorative large circle top-right
         g2.setColor(new Color(255, 255, 255, 14));
         int r1 = (int) (getWidth() * 0.85);
         g2.fillOval(getWidth() - r1 + 40, -r1 / 3, r1, r1);
 
-        // Decorative small circle bottom-left
         g2.setColor(new Color(255, 255, 255, 10));
         int r2 = (int) (getWidth() * 0.6);
         g2.fillOval(-r2 / 4, getHeight() - r2 + 60, r2, r2);

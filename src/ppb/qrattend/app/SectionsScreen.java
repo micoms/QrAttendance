@@ -105,8 +105,6 @@ final class SectionsScreen {
                 body);
     }
 
-    // --- Section list with Edit / Delete ---
-
     private static JPanel buildSectionList(AppShell shell, List<Section> sections) {
         JPanel panel = new AppTheme.RoundedPanel(AppTheme.RADIUS_MD, AppTheme.SURFACE_ALT);
         panel.setLayout(new BorderLayout());
@@ -193,8 +191,6 @@ final class SectionsScreen {
         return row;
     }
 
-    // --- Subject list with Edit / Delete ---
-
     private static JPanel buildSubjectList(AppShell shell, List<Subject> subjects) {
         JPanel panel = new AppTheme.RoundedPanel(AppTheme.RADIUS_MD, AppTheme.SURFACE_ALT);
         panel.setLayout(new BorderLayout());
@@ -280,8 +276,6 @@ final class SectionsScreen {
         row.add(deleteButton);
         return row;
     }
-
-    // --- Room list with Edit / Delete ---
 
     private static JPanel buildRoomList(AppShell shell, List<Room> rooms) {
         JPanel panel = new AppTheme.RoundedPanel(AppTheme.RADIUS_MD, AppTheme.SURFACE_ALT);

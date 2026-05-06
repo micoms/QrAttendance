@@ -144,7 +144,6 @@ final class AdminSchedulesScreen {
 
         JTable table = new JTable(model);
 
-        // Inline edit form (initially hidden)
         JLabel editFormLabel = new JLabel("Edit selected class:");
         editFormLabel.setFont(AppTheme.bodyFont(12));
         editFormLabel.setForeground(AppTheme.TEXT_MUTED);
@@ -195,7 +194,6 @@ final class AdminSchedulesScreen {
         editForm.add(shell.labeledField("Action", saveChangesButton));
         editForm.setVisible(false);
 
-        // Action buttons
         JButton editButton = new JButton("Edit");
         JButton deleteButton = new JButton("Delete");
         AppTheme.styleSecondaryButton(editButton);
@@ -210,38 +208,32 @@ final class AdminSchedulesScreen {
             }
             Schedule schedule = schedules.get(row);
 
-            // Pre-select teacher
             for (int i = 0; i < teachers.size(); i++) {
                 if (teachers.get(i).id() == schedule.teacherId()) {
                     editTeacherCombo.setSelectedIndex(i);
                     break;
                 }
             }
-            // Pre-select section
             for (int i = 0; i < sections.size(); i++) {
                 if (sections.get(i).id() == schedule.sectionId()) {
                     editSectionCombo.setSelectedIndex(i);
                     break;
                 }
             }
-            // Pre-select subject
             for (int i = 0; i < subjects.size(); i++) {
                 if (subjects.get(i).id() == schedule.subjectId()) {
                     editSubjectCombo.setSelectedIndex(i);
                     break;
                 }
             }
-            // Pre-select room
             for (int i = 0; i < rooms.size(); i++) {
                 if (rooms.get(i).id() == schedule.roomId()) {
                     editRoomCombo.setSelectedIndex(i);
                     break;
                 }
             }
-            // Pre-select day
             editDayCombo.setSelectedItem(schedule.day());
 
-            // Pre-select start time
             String startLabel = schedule.startTime().format(ppb.qrattend.model.CoreModels.TIME_FORMAT);
             for (int i = 0; i < editStartCombo.getItemCount(); i++) {
                 if (startLabel.equals(editStartCombo.getItemAt(i))) {
@@ -249,7 +241,6 @@ final class AdminSchedulesScreen {
                     break;
                 }
             }
-            // Pre-select end time
             String endLabel = schedule.endTime().format(ppb.qrattend.model.CoreModels.TIME_FORMAT);
             for (int i = 0; i < editEndCombo.getItemCount(); i++) {
                 if (endLabel.equals(editEndCombo.getItemAt(i))) {

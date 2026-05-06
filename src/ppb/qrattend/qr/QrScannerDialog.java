@@ -138,7 +138,6 @@ public final class QrScannerDialog extends JDialog {
             try {
                 webcam.close();
             } catch (RuntimeException ex) {
-                // Ignore close errors while the dialog is finishing.
             }
         }
         if (onDetected != null) {
@@ -156,7 +155,6 @@ public final class QrScannerDialog extends JDialog {
             try {
                 webcam.close();
             } catch (RuntimeException ex) {
-                // Ignore close errors during disposal.
             }
         }
         super.dispose();

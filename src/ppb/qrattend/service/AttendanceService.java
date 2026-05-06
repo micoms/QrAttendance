@@ -49,9 +49,6 @@ public final class AttendanceService {
             LIMIT 1
             """;
 
-    // Scheduled classes should stay open for the full saved end minute.
-    // Example: a class that ends at 3:00 PM is still treated as open at 3:00 PM,
-    // then closes after that minute has passed.
     private static final String SELECT_CURRENT_SCHEDULE_SQL = """
             SELECT
                 sc.schedule_id,
@@ -568,7 +565,6 @@ public final class AttendanceService {
     }
 
     private AttendanceSession loadOrCreateScheduleSession(Connection connection, ScheduleRow schedule) throws SQLException {
-        // First check if a session already exists for this schedule today
         try (PreparedStatement statement = connection.prepareStatement(SELECT_OPEN_SCHEDULE_SESSION_SQL)) {
             statement.setInt(1, schedule.teacherId);
             statement.setInt(2, schedule.scheduleId);
@@ -580,8 +576,6 @@ public final class AttendanceService {
             }
         }
 
-        // No session yet — create one inside a transaction so a failed load
-        // does not leave an orphaned open session row in the database
         connection.setAutoCommit(false);
         try {
             int sessionId = insertSession(connection, schedule.teacherId, schedule.scheduleId, schedule.sectionId,

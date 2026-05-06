@@ -152,7 +152,6 @@ public final class AppDomain {
         }
 
         public void setPassword(String password) {
-            // Teacher profiles no longer keep readable passwords in memory.
         }
 
         public EmailStatus getEmailStatus() {

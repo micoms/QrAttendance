@@ -62,11 +62,9 @@ public class MyPasswordField extends JPasswordField {
         Graphics2D g2 = (Graphics2D) g.create();
         g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
 
-        // Background
         g2.setColor(focused ? BG_FOCUS : BG_NORMAL);
         g2.fillRoundRect(0, 0, getWidth(), getHeight(), 10, 10);
 
-        // Border ring
         g2.setColor(focused ? BORDER_FOCUS : BORDER_NORMAL);
         g2.setStroke(new java.awt.BasicStroke(focused ? 1.6f : 1f));
         g2.drawRoundRect(1, 1, getWidth() - 2, getHeight() - 2, 10, 10);
